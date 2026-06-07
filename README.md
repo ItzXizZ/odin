@@ -28,8 +28,8 @@ Optional keys unlock extra capabilities:
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/cursor-for-writing.git
-cd cursor-for-writing
+git clone https://github.com/ItzXizZ/odin.git
+cd odin
 
 # Install dependencies
 npm install
