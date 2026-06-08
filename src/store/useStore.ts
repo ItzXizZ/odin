@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import type { Node, Edge } from 'reactflow'
 import type { SourceRef } from '../lib/sources'
+import { DEFAULT_STYLE_RULES, type StyleRule } from '../lib/style'
 
 export type AppTab = 'context' | 'stream' | 'exploration' | 'write' | 'grade'
 
@@ -57,6 +58,12 @@ export interface ExplorationNodeData {
   visual?: VisualAsset
   /** Status message while a visual is being prepared. */
   visualStatus?: string
+  /** When the request is ambiguous, the user picks how to create the visual. */
+  visualChoice?: { suggestion?: 'search' | 'generate' }
+  /** Stored request params so a visual can be (re)generated after a choice. */
+  visualRequest?: { query: string; parentId?: string; excerpt?: string }
+  /** Transient callback injected by ExplorationMode — not persisted. */
+  onVisualChoice?: (method: 'search' | 'generate') => void
   /** Web research + cited sources captured for this message. */
   sources?: SourceRef[]
   connectionCount?: number
@@ -137,6 +144,7 @@ interface AppState {
   documentTitle: string
   writingPrompt: string
   highlightedText: string
+  styleRules: StyleRule[]
 
   // Grade Mode
   rubric: string
@@ -175,6 +183,8 @@ interface AppState {
   setDocumentTitle: (title: string) => void
   setWritingPrompt: (prompt: string) => void
   setHighlightedText: (text: string) => void
+  setStyleRules: (rules: StyleRule[]) => void
+  resetStyleRules: () => void
 
   setRubric: (rubric: string) => void
   setGradeResult: (result: GradeResult | null) => void
@@ -206,6 +216,7 @@ export const useStore = create<AppState>()(
       documentTitle: 'Untitled',
       writingPrompt: '',
       highlightedText: '',
+      styleRules: DEFAULT_STYLE_RULES,
 
       rubric: `Thesis & Argument (25 pts): Clear, debatable thesis with well-supported arguments
 Evidence & Analysis (25 pts): Relevant evidence with deep critical analysis
@@ -304,6 +315,8 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
       setDocumentTitle: (title) => set({ documentTitle: title }),
       setWritingPrompt: (prompt) => set({ writingPrompt: prompt }),
       setHighlightedText: (text) => set({ highlightedText: text }),
+      setStyleRules: (rules) => set({ styleRules: rules }),
+      resetStyleRules: () => set({ styleRules: DEFAULT_STYLE_RULES }),
 
       setRubric: (rubric) => set({ rubric }),
       setGradeResult: (result) => set({ gradeResult: result }),
@@ -397,6 +410,7 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
         sessions: s.sessions,
         documentContent: s.documentContent,
         documentTitle: s.documentTitle,
+        styleRules: s.styleRules,
         rubric: s.rubric,
         adventures: s.adventures,
         activeAdventureId: s.activeAdventureId,

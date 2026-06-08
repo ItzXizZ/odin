@@ -52,6 +52,10 @@ export default function StreamOfConsciousness() {
             if (qs.length > 0) setQuestions((prev) => [...qs, ...prev].slice(0, 15))
             setQuestionBuffer('')
             setIsGenerating(false)
+          },
+          () => {
+            setQuestionBuffer('')
+            setIsGenerating(false)
           }
         )
       } catch {

@@ -3,6 +3,9 @@ export interface ChatMessage {
   content: string
 }
 
+/** Abort the stream if no data arrives for this long, so a stalled response can't spin forever. */
+const STREAM_IDLE_TIMEOUT_MS = 60000
+
 export async function streamChat(
   messages: ChatMessage[],
   system: string,
@@ -11,51 +14,74 @@ export async function streamChat(
   onDone?: () => void,
   onError?: (err: string) => void
 ): Promise<void> {
-  const res = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, system, apiKey }),
-  })
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Request failed' }))
-    onError?.(err.error || 'Request failed')
-    return
+  const controller = new AbortController()
+  let idleTimer: ReturnType<typeof setTimeout> | null = null
+  const resetIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => controller.abort(), STREAM_IDLE_TIMEOUT_MS)
   }
 
-  const reader = res.body!.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
+  try {
+    resetIdle()
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, system, apiKey }),
+      signal: controller.signal,
+    })
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Request failed' }))
+      onError?.(err.error || 'Request failed')
+      return
+    }
 
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
 
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      const payload = line.slice(6).trim()
-      if (payload === '[DONE]') {
-        onDone?.()
-        return
-      }
-      try {
-        const parsed = JSON.parse(payload)
-        if (parsed.error) {
-          onError?.(parsed.error)
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      resetIdle()
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const payload = line.slice(6).trim()
+        if (payload === '[DONE]') {
+          onDone?.()
           return
         }
-        if (parsed.text) onChunk(parsed.text)
-      } catch {
-        // ignore parse errors on partial chunks
+        try {
+          const parsed = JSON.parse(payload)
+          if (parsed.error) {
+            onError?.(parsed.error)
+            return
+          }
+          if (parsed.text) onChunk(parsed.text)
+        } catch {
+          // ignore parse errors on partial chunks
+        }
       }
     }
-  }
 
-  onDone?.()
+    onDone?.()
+  } catch (err) {
+    const aborted = err instanceof DOMException && err.name === 'AbortError'
+    onError?.(
+      aborted
+        ? 'Response timed out. Please try again.'
+        : err instanceof Error
+        ? err.message
+        : 'Request failed'
+    )
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer)
+  }
 }
 
 export async function syncChat(
@@ -64,11 +90,20 @@ export async function syncChat(
   apiKey: string,
   maxTokens = 2048
 ): Promise<string> {
-  const res = await fetch('/api/chat/sync', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages, system, apiKey, maxTokens }),
-  })
+  let res: Response
+  try {
+    res = await fetch('/api/chat/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, system, apiKey, maxTokens }),
+      signal: AbortSignal.timeout(90000),
+    })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new Error('Request timed out. Please try again.')
+    }
+    throw new Error(err instanceof Error ? err.message : 'Request failed')
+  }
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }))

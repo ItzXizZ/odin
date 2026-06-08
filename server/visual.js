@@ -117,7 +117,7 @@ async function fetchImageBuffer(url) {
 async function duckDuckGoImageSearch(query, maxResults = 8) {
   const searchRes = await fetch(
     `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`,
-    { headers: { 'User-Agent': UA, Accept: 'text/html' } }
+    { headers: { 'User-Agent': UA, Accept: 'text/html' }, signal: AbortSignal.timeout(10000) }
   )
   if (!searchRes.ok) throw new Error(`Image search failed (${searchRes.status})`)
 
@@ -134,6 +134,7 @@ async function duckDuckGoImageSearch(query, maxResults = 8) {
         Accept: 'application/json',
         Referer: 'https://duckduckgo.com/',
       },
+      signal: AbortSignal.timeout(10000),
     }
   )
 
@@ -201,7 +202,9 @@ Return ONLY valid JSON:
   "subjects": ["generic or IUPAC compound names"],
   "searchQuery": "precise web image search query",
   "imageGenPrompt": "detailed prompt for high-quality AI image generation",
-  "caption": "2-3 sentences explaining the visual for the writer"
+  "caption": "2-3 sentences explaining the visual for the writer",
+  "method": "search" | "generate",
+  "methodConfidence": "high" | "low"
 }
 
 INTENT RULES:
@@ -213,7 +216,13 @@ INTENT RULES:
 If user asks for a molecule INTERACTING with something (receptor, enzyme, etc.), intent MUST be "diagram" — use imageGenPrompt for AI generation, NOT PubChem.
 
 If the user corrected an earlier misunderstanding (e.g. "I meant the chemical structure"), the LATEST intent wins.
-For imageGenPrompt: be extremely specific to the user's request and conversation. Include every element they described. For sketches: clean hand-drawn diagram style, white background, clear readable labels. Max 900 characters.`,
+For imageGenPrompt: be extremely specific to the user's request and conversation. Include every element they described. For sketches: clean hand-drawn diagram style, white background, clear readable labels. Max 900 characters.
+
+METHOD RULES — weigh the TIME COST. AI image generation is slow (30–120s) but produces a NEW image tailored exactly to the request. Web image SEARCH is fast (a few seconds) but only returns an existing real-world image.
+- "search": real-world objects/people/places, "what does X look like", reference photos, well-known existing imagery, or anything where a real existing photo answers the request. Prefer this when it adequately satisfies the user, because it is far faster.
+- "generate": custom/novel compositions, requests with many SPECIFIC required elements (e.g. "with arrows showing…", "labeled steps", "a diagram of MY process/algorithm"), particular artistic styles, or anything unlikely to exist as a single real image.
+- methodConfidence "high" when one method is clearly correct.
+- methodConfidence "low" ONLY when the request is genuinely ambiguous and either method is reasonable (a generic real subject that the user might want either photographed OR illustrated). Use "low" sparingly.`,
       },
     ],
   })
@@ -226,6 +235,8 @@ For imageGenPrompt: be extremely specific to the user's request and conversation
     searchQuery: query,
     imageGenPrompt: `Educational scientific diagram: ${query}. Clean labeled illustration, white background.`,
     caption: 'Visual adapted to your exploration.',
+    method: 'generate',
+    methodConfidence: 'high',
   })
 }
 
@@ -417,7 +428,10 @@ async function replicateProGenerate(prompt) {
     if (!pollUrl) return null
     for (let i = 0; i < 60; i++) {
       await new Promise((r) => setTimeout(r, 2000))
-      const pollRes = await fetch(pollUrl, { headers: { Authorization: `Bearer ${token}` } })
+      const pollRes = await fetch(pollUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      })
       const polled = await pollRes.json()
       if (polled.status === 'succeeded') {
         output = polled.output
@@ -540,6 +554,31 @@ Return ONLY JSON:
   }
 }
 
+/** Fast path: find a real existing image from the web instead of generating one. */
+async function searchWebImage(query, intent) {
+  const searchQuery = (intent.searchQuery || query).trim()
+  const candidates = await duckDuckGoImageSearch(searchQuery, 12).catch(() => [])
+
+  for (const candidate of candidates) {
+    try {
+      const prepared = await prepareVisionImage(candidate.imageUrl)
+      return {
+        imageDataUrl: `data:${prepared.mediaType};base64,${prepared.base64}`,
+        caption: intent.caption || `Reference image found for "${query}".`,
+        referenceUrl: candidate.sourceUrl || candidate.imageUrl,
+        referenceTitle: candidate.title || 'Web image',
+        referenceImageUrl: candidate.imageUrl,
+        mode: 'reference_photo',
+        provider: 'web',
+      }
+    } catch {
+      // try the next candidate
+    }
+  }
+
+  return null
+}
+
 async function generateAdaptedVisual(client, query, fullContext, messageChain, intent) {
   const plan = await buildAdaptedGenPrompt(client, query, fullContext, messageChain, intent)
 
@@ -560,6 +599,119 @@ async function generateAdaptedVisual(client, query, fullContext, messageChain, i
   }
 }
 
+/**
+ * Tool-calling router. Instead of brittle keyword matching, we hand Claude the
+ * actual capabilities (write text / generate image / find image / ask the user)
+ * and let it decide which one fits the request. tool_choice "any" forces a pick.
+ */
+const ROUTING_TOOLS = [
+  {
+    name: 'write_text_response',
+    description:
+      'Answer the user in writing — explanation, analysis, research, discussion, brainstorming. Use this for ANY request that is not primarily asking to SEE an image or visual. This is the default.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'generate_image',
+    description:
+      'Create a NEW custom image with AI image generation. Slower (30-120s) but tailored exactly to the request. Choose this for custom diagrams, sketches, labeled figures, novel or artistic compositions, or anything specific that is unlikely to already exist as a real photo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            "A clear, standalone description of what the image should depict. Resolve pronouns like 'this/it/that' using the conversation so the description makes sense on its own.",
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'find_image',
+    description:
+      'Find a REAL existing image from the web. Fast (a few seconds). Choose this when the user wants to see what a real-world object, person, place, or device actually looks like, or wants a reference photo that already exists. Prefer this over generation whenever a real photo would satisfy the user, because it is far faster.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'A web image search query. Resolve pronouns using the conversation so it makes sense on its own.',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'ask_user_image_method',
+    description:
+      'Use ONLY when the user clearly wants an image but it is genuinely ambiguous whether a custom AI-generated image or a real existing web image would serve them better. Presents the user a quick two-way choice.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'The standalone description / search query for the desired image.',
+        },
+      },
+      required: ['query'],
+    },
+  },
+]
+
+export async function decideExplorationAction({ apiKey, prompt, messageChain, context, excerpt }) {
+  const key = apiKey || process.env.ANTHROPIC_API_KEY
+  if (!key) throw new Error('No Anthropic API key provided')
+  const client = new Anthropic({ apiKey: key })
+
+  const chainText = (messageChain || [])
+    .map((m) => `${m.role.toUpperCase()}: ${m.content.slice(0, 1500)}`)
+    .join('\n\n')
+
+  const userBlock = excerpt
+    ? `The user highlighted this excerpt: "${excerpt}"\n\nUser request: "${prompt}"`
+    : `User request: "${prompt}"`
+
+  const response = await client.messages.create(
+    {
+      model: 'claude-sonnet-4-5',
+      max_tokens: 500,
+      tools: ROUTING_TOOLS,
+      tool_choice: { type: 'any' },
+      messages: [
+        {
+          role: 'user',
+          content: `You route requests in a research-writing app. Decide how to handle the user's LATEST request by calling exactly ONE tool.
+
+CONVERSATION (oldest first):
+${chainText || '(none)'}
+
+${context ? `BACKGROUND:\n${context.slice(0, 2000)}\n\n` : ''}${userBlock}
+
+Most requests are written answers. Only choose an image tool when the user actually wants to SEE a visual (e.g. "show me", "find an image", "make a diagram", "what does X look like"). When they do want an image, weigh speed: prefer find_image for real things, generate_image for custom/specific visuals.`,
+        },
+      ],
+    },
+    { timeout: 25000 }
+  )
+
+  const toolUse = response.content.find((b) => b.type === 'tool_use')
+  if (!toolUse) return { action: 'text' }
+
+  const query = (toolUse.input?.query || prompt).trim()
+  switch (toolUse.name) {
+    case 'generate_image':
+      return { action: 'generate', query }
+    case 'find_image':
+      return { action: 'search', query }
+    case 'ask_user_image_method':
+      return { action: 'choose', query }
+    default:
+      return { action: 'text' }
+  }
+}
+
 export async function generateVisualAsset({
   query,
   apiKey,
@@ -568,6 +720,7 @@ export async function generateVisualAsset({
   parentResponse,
   excerpt,
   messageChain,
+  method,
 }) {
   const key = apiKey || process.env.ANTHROPIC_API_KEY
   if (!key) throw new Error('No Anthropic API key provided')
@@ -635,7 +788,23 @@ export async function generateVisualAsset({
     }
   }
 
-  // --- Everything else: always adapt via AI image generation (DALL-E 3 first) ---
+  // --- Decide between fast web search and slow custom generation ---
+  // A forced method (from the user's button choice) always wins. Otherwise, if the
+  // model is genuinely unsure, ask the client to present the two-choice UI.
+  let chosenMethod = method === 'search' || method === 'generate' ? method : null
+  if (!chosenMethod) {
+    if (intent.methodConfidence === 'low') {
+      return { needsChoice: true, suggestion: intent.method === 'search' ? 'search' : 'generate' }
+    }
+    chosenMethod = intent.method === 'search' ? 'search' : 'generate'
+  }
+
+  if (chosenMethod === 'search') {
+    const found = await searchWebImage(query, intent)
+    if (found) return found
+    // No usable web image — fall back to generation so the user still gets a result.
+  }
+
   return generateAdaptedVisual(client, query, fullContext, messageChain, intent)
 }
 

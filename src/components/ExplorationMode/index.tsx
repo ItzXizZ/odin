@@ -25,8 +25,8 @@ import LiveSourceFeed from './LiveSourceFeed'
 import AdventureMenu from './AdventureMenu'
 import { layoutTree } from './layout'
 import { aggregateSources, extractSourcesFromText, mergeSources, type SourceRef } from '../../lib/sources'
-import { isVisualRequest, resolveVisualQuery } from '../../lib/visualDetect'
-import { generateVisual, type VisualMessage } from '../../lib/visual'
+import { routeExploration } from '../../lib/route'
+import { generateVisual, isVisualChoice, type VisualMessage } from '../../lib/visual'
 
 const nodeTypes = { exploration: ExplorationNode }
 const edgeTypes = { floating: FloatingEdge }
@@ -109,23 +109,6 @@ export default function ExplorationMode() {
     })
     return exercised
   }, [edges])
-
-  const flowNodes = useMemo(
-    () =>
-      nodes.map((n) => ({
-        ...n,
-        data: {
-          ...n.data,
-          pendingHighlight:
-            pendingExcerpt?.sourceId === n.id ? pendingExcerpt.text : undefined,
-          onReplyFull: nodesWithFullReply.has(n.id)
-            ? undefined
-            : () => startFullReply(n.id),
-          isReplyTarget: selectedNodeId === n.id && !pendingExcerpt,
-        },
-      })),
-    [nodes, edges, pendingExcerpt, startFullReply, selectedNodeId, nodesWithFullReply]
-  )
 
   // Keep latest nodes/edges available for layout without stale closures
   const nodesRef = useRef(nodes)
@@ -269,6 +252,158 @@ export default function ExplorationMode() {
     [edges, setEdges, setExplorationEdges, setNodes]
   )
 
+  // Run (or re-run) visual generation for an existing node. Handles the slow
+  // AI-generation path, the fast web-search path, and the ambiguous "needs choice" case.
+  const runVisualGeneration = useCallback(
+    async (
+      id: string,
+      req: { query: string; parentId?: string; excerpt?: string; method?: 'search' | 'generate' }
+    ) => {
+      if (!apiKey) return
+      const parentNode = req.parentId ? nodesRef.current.find((n) => n.id === req.parentId) : null
+      const status =
+        req.method === 'search'
+          ? 'Finding the best image…'
+          : req.method === 'generate'
+          ? 'Generating adapted visual…'
+          : 'Preparing visual…'
+
+      setNodes((prev) => {
+        const updated = prev.map((n) =>
+          n.id === id
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  nodeKind: 'visual' as const,
+                  isLoading: true,
+                  visualStatus: status,
+                  visualChoice: undefined,
+                  visualRequest: { query: req.query, parentId: req.parentId, excerpt: req.excerpt },
+                },
+              }
+            : n
+        )
+        persistNodes(updated)
+        return updated
+      })
+
+      try {
+        const result = await generateVisual({
+          query: req.query,
+          apiKey,
+          context: getFullContext(),
+          parentPrompt: parentNode?.data.prompt,
+          parentResponse: parentNode?.data.response,
+          excerpt: req.excerpt,
+          messageChain: buildMessageChain(nodesRef.current, edgesRef.current, req.parentId),
+          method: req.method,
+        })
+
+        if (isVisualChoice(result)) {
+          setNodes((prev) => {
+            const updated = prev.map((n) =>
+              n.id === id
+                ? {
+                    ...n,
+                    data: {
+                      ...n.data,
+                      isLoading: false,
+                      visualStatus: undefined,
+                      visualChoice: { suggestion: result.suggestion },
+                    },
+                  }
+                : n
+            )
+            persistNodes(updated)
+            return updated
+          })
+          return
+        }
+
+        setNodes((prev) => {
+          const updated = prev.map((n) => {
+            if (n.id !== id) return n
+            const refSources: SourceRef[] = result.referenceUrl
+              ? [
+                  {
+                    id: result.referenceUrl,
+                    title: result.referenceTitle || 'Reference',
+                    url: result.referenceUrl,
+                  },
+                ]
+              : []
+            return {
+              ...n,
+              data: {
+                ...n.data,
+                visual: result,
+                response: result.caption,
+                isLoading: false,
+                visualStatus: undefined,
+                visualChoice: undefined,
+                sources: mergeSources(n.data.sources ?? [], refSources),
+              },
+            }
+          })
+          persistNodes(updated)
+          return updated
+        })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Visual generation failed'
+        setNodes((prev) => {
+          const updated = prev.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    response: `⚠️ ${message}. Try rephrasing your visual request.`,
+                    isLoading: false,
+                    visualStatus: undefined,
+                    visualChoice: undefined,
+                  },
+                }
+              : n
+          )
+          persistNodes(updated)
+          return updated
+        })
+      }
+    },
+    [apiKey, setNodes, persistNodes, getFullContext]
+  )
+
+  const resolveVisualChoice = useCallback(
+    (nodeId: string, method: 'search' | 'generate') => {
+      const node = nodesRef.current.find((n) => n.id === nodeId)
+      const req = node?.data.visualRequest
+      if (!req) return
+      runVisualGeneration(nodeId, { ...req, method })
+    },
+    [runVisualGeneration]
+  )
+
+  const flowNodes = useMemo(
+    () =>
+      nodes.map((n) => ({
+        ...n,
+        data: {
+          ...n.data,
+          pendingHighlight:
+            pendingExcerpt?.sourceId === n.id ? pendingExcerpt.text : undefined,
+          onReplyFull: nodesWithFullReply.has(n.id)
+            ? undefined
+            : () => startFullReply(n.id),
+          isReplyTarget: selectedNodeId === n.id && !pendingExcerpt,
+          onVisualChoice: n.data.visualChoice
+            ? (method: 'search' | 'generate') => resolveVisualChoice(n.id, method)
+            : undefined,
+        },
+      })),
+    [nodes, pendingExcerpt, startFullReply, selectedNodeId, nodesWithFullReply, resolveVisualChoice]
+  )
+
   const createNode = useCallback(
     async (
       userPrompt: string,
@@ -292,15 +427,6 @@ export default function ExplorationMode() {
           : { x: parentNode.position.x + pw + 90, y: parentNode.position.y }
         : { x: 100 + Math.random() * 200, y: 100 + nodes.length * 160 }
       const pos = opts?.position ?? defaultPos
-      const visualCtx = {
-        hasParentContext: Boolean(parentNode),
-        hasExcerpt: Boolean(opts?.excerpt),
-        parentPrompt: parentNode?.data.prompt,
-        parentResponse: parentNode?.data.response,
-        excerpt: opts?.excerpt,
-      }
-      const wantsVisual = isVisualRequest(userPrompt, visualCtx)
-      const visualQuery = wantsVisual ? resolveVisualQuery(userPrompt, visualCtx) : userPrompt
 
       const newNode: Node<ExplorationNodeData> = {
         id,
@@ -311,8 +437,7 @@ export default function ExplorationMode() {
           response: '',
           isLoading: true,
           connectionCount: 0,
-          nodeKind: wantsVisual ? 'visual' : 'text',
-          visualStatus: wantsVisual ? 'Preparing adapted visual…' : undefined,
+          nodeKind: 'text',
         },
       }
 
@@ -378,11 +503,54 @@ export default function ExplorationMode() {
         return
       }
 
-      // Always research the web before generating a response
+      // Let the model decide — via tool-calling — how to handle this request:
+      // a written answer, a custom generated image, a real web image, or asking the user.
+      const decision = await routeExploration({
+        prompt: userPrompt,
+        apiKey,
+        context: getFullContext(),
+        excerpt: opts?.excerpt,
+        messageChain: buildMessageChain(nodesRef.current, edgesRef.current, parentId),
+      })
+
+      if (decision.action === 'generate' || decision.action === 'search') {
+        await runVisualGeneration(id, {
+          query: decision.query,
+          parentId,
+          excerpt: opts?.excerpt,
+          method: decision.action,
+        })
+        return
+      }
+
+      if (decision.action === 'choose') {
+        setNodes((prev) => {
+          const updated = prev.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    nodeKind: 'visual' as const,
+                    isLoading: false,
+                    visualStatus: undefined,
+                    visualChoice: {},
+                    visualRequest: { query: decision.query, parentId, excerpt: opts?.excerpt },
+                  },
+                }
+              : n
+          )
+          persistNodes(updated)
+          return updated
+        })
+        return
+      }
+
+      // --- Text answer: research the web, then stream a grounded response ---
       let researchSources: SourceRef[] = []
       let researchContext = ''
       try {
-        const research = await researchQuery(wantsVisual ? visualQuery : userPrompt)
+        const research = await researchQuery(userPrompt)
         researchSources = research.sources
         researchContext = research.context
         setNodes((prev) => {
@@ -415,70 +583,6 @@ export default function ExplorationMode() {
       }
 
       const context = getFullContext()
-
-      if (wantsVisual) {
-        setNodes((prev) =>
-          prev.map((n) =>
-            n.id === id
-              ? { ...n, data: { ...n.data, visualStatus: 'Generating adapted visual…' } }
-              : n
-          )
-        )
-
-        try {
-          const visual = await generateVisual({
-            query: visualQuery,
-            apiKey,
-            context,
-            parentPrompt: parentNode?.data.prompt,
-            parentResponse: parentNode?.data.response,
-            excerpt: opts?.excerpt,
-            messageChain: buildMessageChain(nodesRef.current, edgesRef.current, parentId),
-          })
-
-          setNodes((prev) => {
-            const updated = prev.map((n) => {
-              if (n.id !== id) return n
-              const refSources: SourceRef[] = visual.referenceUrl
-                ? [{ id: visual.referenceUrl, title: visual.referenceTitle || 'Reference photo', url: visual.referenceUrl }]
-                : []
-              return {
-                ...n,
-                data: {
-                  ...n.data,
-                  visual,
-                  response: visual.caption,
-                  isLoading: false,
-                  visualStatus: undefined,
-                  sources: mergeSources(n.data.sources ?? researchSources, refSources),
-                },
-              }
-            })
-            persistNodes(updated)
-            return updated
-          })
-        } catch (err) {
-          const message = err instanceof Error ? err.message : 'Visual generation failed'
-          setNodes((prev) => {
-            const updated = prev.map((n) =>
-              n.id === id
-                ? {
-                    ...n,
-                    data: {
-                      ...n.data,
-                      response: `⚠️ ${message}. Try rephrasing your visual request.`,
-                      isLoading: false,
-                      visualStatus: undefined,
-                    },
-                  }
-                : n
-            )
-            persistNodes(updated)
-            return updated
-          })
-        }
-        return
-      }
 
       const system = `You are a research and writing assistant. Be thoughtful, analytical, and intellectually stimulating.
 Give substantive responses that help the writer explore ideas deeply.
@@ -536,10 +640,38 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
             persistNodes(updated)
             return updated
           })
+        },
+        (errMessage) => {
+          setNodes((prev) => {
+            const updated = prev.map((n) =>
+              n.id === id
+                ? {
+                    ...n,
+                    data: {
+                      ...n.data,
+                      response: response || `⚠️ ${errMessage}. Please try again.`,
+                      isLoading: false,
+                    },
+                  }
+                : n
+            )
+            persistNodes(updated)
+            return updated
+          })
         }
       )
     },
-    [nodes, apiKey, setNodes, setEdges, setExplorationEdges, persistNodes, updateNodeResponse, getFullContext]
+    [
+      nodes,
+      apiKey,
+      setNodes,
+      setEdges,
+      setExplorationEdges,
+      persistNodes,
+      updateNodeResponse,
+      getFullContext,
+      runVisualGeneration,
+    ]
   )
 
   const handleNewNode = (e: React.FormEvent) => {

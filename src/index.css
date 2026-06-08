@@ -1016,6 +1016,18 @@
 .wave-bar:nth-child(5) { animation-delay: 0.4s; }
 
 /* ============================================================
+   IMAGE-GEN PROGRESS BAR — glassy sweeping highlight
+   ============================================================ */
+@keyframes progressShimmer {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(260%); }
+}
+
+.exp-progress-shimmer {
+  animation: progressShimmer 1.6s var(--anim--hover-ease) infinite;
+}
+
+/* ============================================================
    DARK → LIGHT THEME CONVERSIONS
    Override dark-theme Tailwind classes throughout the app to
    work on the new light glass background, without needing to
@@ -1130,6 +1142,514 @@ kbd {
 /* Red and green semantic colors keep meaning */
 .text-green-400, .text-green-500 { color: rgba(30, 120, 60, 1) !important; }
 .text-red-400, .text-red-300 { color: rgba(160, 40, 40, 1) !important; }
+
+/* ============================================================
+   INLINE DOCUMENT DIFF (AI suggestions in the editor)
+   ============================================================ */
+.tiptap-editor .ProseMirror span.diff-ins {
+  background-color: rgba(80, 160, 80, 0.18);
+  color: rgba(25, 95, 30, 1);
+  border-radius: 3px;
+  padding: 0 1px;
+  text-decoration: none;
+}
+
+.tiptap-editor .ProseMirror span.diff-del {
+  background-color: rgba(200, 60, 60, 0.12);
+  color: rgba(140, 40, 40, 0.85);
+  border-radius: 3px;
+  padding: 0 1px;
+  text-decoration: line-through;
+}
+
+/* Per-hunk accept / reject controls rendered as a widget after each change */
+.diff-hunk-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 2px;
+  vertical-align: middle;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.diff-hunk-btn {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05em;
+  height: 1.05em;
+  font-size: 0.72em;
+  line-height: 1;
+  border-radius: 5px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.diff-hunk-btn:hover {
+  transform: scale(1.12);
+  filter: brightness(1.05);
+}
+
+.diff-hunk-accept {
+  background: rgba(80, 165, 90, 0.9);
+  color: white;
+}
+
+.diff-hunk-reject {
+  background: rgba(210, 80, 80, 0.9);
+  color: white;
+}
+
+/* ============================================================
+   FLOATING SELECTION TOOLBAR
+   ============================================================ */
+.selection-toolbar {
+  position: fixed;
+  z-index: 60;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25em;
+  padding: 0.3em 0.4em;
+  border-radius: 999vw;
+  background: linear-gradient(-75deg, rgba(255,255,255,0.6), rgba(255,255,255,0.82), rgba(255,255,255,0.6));
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.18), inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.selection-toolbar-btn {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: 0.4em 0.75em;
+  border-radius: 999vw;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: rgba(40, 40, 40, 0.85);
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.selection-toolbar-btn:hover {
+  background: rgba(100, 150, 255, 0.16);
+  color: rgba(30, 65, 140, 1);
+}
+
+.selection-toolbar-sep {
+  width: 1px;
+  height: 1.1em;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+/* ============================================================
+   ATTACHED PASSAGE POPUP (drag-to-prompt)
+   ============================================================ */
+.attached-popup {
+  position: relative;
+  border-radius: 0.85em;
+  padding: 0.55em 0.7em;
+  background: linear-gradient(-75deg, rgba(100,150,255,0.1), rgba(120,170,255,0.18), rgba(100,150,255,0.1));
+  box-shadow: 0 4px 14px rgba(40, 80, 160, 0.12), inset 0 0 0 1px rgba(120, 160, 255, 0.35);
+}
+
+.attached-popup-tag {
+  flex-shrink: 0;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(40, 80, 160, 0.9);
+  background: rgba(120, 160, 255, 0.25);
+  padding: 0.15em 0.45em;
+  border-radius: 5px;
+  margin-top: 0.1em;
+}
+
+.attached-popup-text {
+  flex: 1;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: rgba(40, 40, 40, 0.85);
+  max-height: 4.5em;
+  overflow-y: auto;
+}
+
+.prompt-dropzone-active {
+  outline: 2px dashed rgba(100, 150, 255, 0.6);
+  outline-offset: -4px;
+  border-radius: 0.85em;
+}
+
+.prompt-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: rgba(30, 65, 140, 0.9);
+  background: rgba(120, 160, 255, 0.12);
+  border-radius: 0.85em;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ============================================================
+   TUNNEL VISION — focus a single sentence
+   ============================================================ */
+.tunnel-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: rgba(225, 225, 225, 0.55);
+  backdrop-filter: blur(18px) saturate(120%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+}
+
+.tunnel-close {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999vw;
+  border: none;
+  cursor: pointer;
+  color: rgba(50, 50, 50, 0.7);
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  transition: all 160ms ease;
+}
+
+.tunnel-close:hover {
+  color: rgba(20, 20, 20, 1);
+  transform: scale(1.05);
+}
+
+.tunnel-content {
+  width: 100%;
+  max-width: 680px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+
+.tunnel-context-line {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.95rem;
+  line-height: 1.7;
+  color: rgba(40, 40, 40, 1);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tunnel-sentence {
+  font-family: 'Inter', sans-serif;
+  font-size: 1.6rem;
+  line-height: 1.5;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: rgba(20, 20, 20, 1);
+  text-align: center;
+  padding: 0.5rem 0 1rem;
+}
+
+.tunnel-prompt-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+  margin-top: 0.5rem;
+}
+
+.tunnel-input {
+  flex: 1;
+  resize: none;
+  padding: 0.7rem 0.9rem;
+  font-size: 0.95rem;
+  line-height: 1.4;
+}
+
+.tunnel-generate {
+  flex-shrink: 0;
+  padding: 0.5em 1.1em;
+  font-size: 0.85rem;
+}
+
+.tunnel-error {
+  font-size: 0.8rem;
+  color: rgba(160, 40, 40, 1);
+  text-align: center;
+}
+
+.tunnel-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.tunnel-option {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.85rem 1rem;
+  border-radius: 0.9em;
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.07), 0 2px 8px rgba(0, 0, 0, 0.05);
+  transition: all 160ms var(--anim--hover-ease);
+}
+
+.tunnel-option:hover {
+  background: rgba(255, 255, 255, 0.7);
+  transform: translateY(-1px);
+}
+
+.tunnel-option.selected {
+  background: linear-gradient(-75deg, rgba(100,150,255,0.12), rgba(120,170,255,0.22), rgba(100,150,255,0.12));
+  box-shadow: inset 0 0 0 1.5px rgba(100, 150, 255, 0.55), 0 4px 14px rgba(40, 80, 160, 0.12);
+}
+
+.tunnel-option-index {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 999vw;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(50, 50, 50, 0.8);
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.tunnel-option.selected .tunnel-option-index {
+  background: rgba(100, 150, 255, 0.3);
+  color: rgba(30, 65, 140, 1);
+}
+
+.tunnel-option-text {
+  flex: 1;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: rgba(30, 30, 30, 1);
+}
+
+.tunnel-option-check {
+  flex-shrink: 0;
+  color: rgba(40, 120, 70, 1);
+  margin-top: 0.15rem;
+}
+
+.tunnel-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.4rem;
+}
+
+.tunnel-refine-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tunnel-feedback {
+  flex: 1;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.9rem;
+}
+
+.tunnel-refine-btn {
+  flex-shrink: 0;
+  padding: 0.5em 1em;
+  font-size: 0.82rem;
+}
+
+.tunnel-apply {
+  align-self: center;
+  padding: 0.6em 1.4em;
+  font-size: 0.9rem;
+}
+
+/* ============================================================
+   STYLISM — floating editable style nodes
+   ============================================================ */
+.stylism-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  background: rgba(220, 220, 220, 0.6);
+  backdrop-filter: blur(20px) saturate(120%);
+  -webkit-backdrop-filter: blur(20px) saturate(120%);
+}
+
+.stylism-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.stylism-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999vw;
+  border: none;
+  cursor: pointer;
+  color: rgba(50, 50, 50, 0.7);
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: all 160ms ease;
+}
+
+.stylism-close:hover {
+  color: rgba(20, 20, 20, 1);
+  transform: scale(1.05);
+}
+
+.stylism-canvas {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-content: flex-start;
+}
+
+@keyframes stylismFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+.stylism-node {
+  width: 250px;
+  border-radius: 1.1em;
+  padding: 0.85rem;
+  background: linear-gradient(-75deg, rgba(255,255,255,0.4), rgba(255,255,255,0.6), rgba(255,255,255,0.4));
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: stylismFloat 6s ease-in-out infinite;
+  transition: box-shadow 200ms ease, opacity 200ms ease;
+}
+
+.stylism-node.disabled {
+  opacity: 0.5;
+}
+
+.stylism-node.editing {
+  animation-play-state: paused;
+  box-shadow: 0 10px 30px rgba(40, 80, 160, 0.18), inset 0 0 0 1.5px rgba(100, 150, 255, 0.5);
+}
+
+.stylism-node-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.stylism-toggle {
+  all: unset;
+  cursor: pointer;
+  flex-shrink: 0;
+  width: 1.9rem;
+  height: 1.05rem;
+  border-radius: 999vw;
+  background: rgba(0, 0, 0, 0.15);
+  position: relative;
+  transition: background 180ms ease;
+}
+
+.stylism-toggle.on {
+  background: rgba(90, 160, 100, 0.85);
+}
+
+.stylism-toggle-knob {
+  position: absolute;
+  top: 0.12rem;
+  left: 0.12rem;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 999vw;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 180ms var(--anim--hover-ease);
+}
+
+.stylism-toggle.on .stylism-toggle-knob {
+  transform: translateX(0.85rem);
+}
+
+.stylism-label {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: rgba(30, 30, 30, 1);
+}
+
+.stylism-delete {
+  all: unset;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: rgba(0, 0, 0, 0.3);
+  transition: color 150ms ease;
+}
+
+.stylism-delete:hover {
+  color: rgba(160, 40, 40, 1);
+}
+
+.stylism-instruction {
+  width: 100%;
+  resize: none;
+  background: rgba(255, 255, 255, 0.4);
+  border: none;
+  outline: none;
+  border-radius: 0.6em;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: rgba(50, 50, 50, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+
+.stylism-instruction:focus {
+  box-shadow: inset 0 0 0 1.5px rgba(100, 150, 255, 0.45);
+}
 
 /* ============================================================
    GRADE SCORE RING ANIMATION

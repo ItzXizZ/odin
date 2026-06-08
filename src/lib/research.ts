@@ -7,11 +7,20 @@ export interface ResearchResult {
 
 /** Run web research for a user query via the backend search API. */
 export async function researchQuery(query: string): Promise<ResearchResult> {
-  const res = await fetch('/api/research', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
-  })
+  let res: Response
+  try {
+    res = await fetch('/api/research', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+      signal: AbortSignal.timeout(30000),
+    })
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      throw new Error('Research timed out')
+    }
+    throw new Error(err instanceof Error ? err.message : 'Research failed')
+  }
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Research failed' }))

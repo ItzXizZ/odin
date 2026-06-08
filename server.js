@@ -4,7 +4,7 @@ import cors from 'cors'
 import multer from 'multer'
 import { createRequire } from 'module'
 import dotenv from 'dotenv'
-import { generateVisualAsset, proxyImage } from './server/visual.js'
+import { generateVisualAsset, proxyImage, decideExplorationAction } from './server/visual.js'
 
 dotenv.config()
 
@@ -90,6 +90,7 @@ async function tavilySearch(query, maxResults = 5) {
       max_results: maxResults,
       include_answer: false,
     }),
+    signal: AbortSignal.timeout(15000),
   })
 
   if (!res.ok) {
@@ -112,6 +113,7 @@ async function duckDuckGoSearch(query, maxResults = 5) {
       'User-Agent': 'Mozilla/5.0 (compatible; OdinWriting/1.0)',
       Accept: 'text/html',
     },
+    signal: AbortSignal.timeout(10000),
   })
 
   if (!res.ok) throw new Error(`DuckDuckGo search failed (${res.status})`)
@@ -184,9 +186,30 @@ app.post('/api/research', async (req, res) => {
   }
 })
 
+// Routing — let the model decide (via tool-calling) text vs generate vs find vs ask
+app.post('/api/route', async (req, res) => {
+  const { prompt, messageChain, context, excerpt, apiKey } = req.body
+  if (!prompt?.trim()) return res.status(400).json({ error: 'Prompt required' })
+
+  try {
+    const decision = await decideExplorationAction({
+      apiKey,
+      prompt: prompt.trim(),
+      messageChain,
+      context,
+      excerpt,
+    })
+    res.json(decision)
+  } catch (err) {
+    // Degrade gracefully: if routing fails, answer in text so the app still works.
+    res.json({ action: 'text', error: err.message })
+  }
+})
+
 // Visual generation — search web photos, adapt for the user's use case
 app.post('/api/visual', async (req, res) => {
-  const { query, apiKey, context, parentPrompt, parentResponse, excerpt, messageChain } = req.body
+  const { query, apiKey, context, parentPrompt, parentResponse, excerpt, messageChain, method } =
+    req.body
   if (!query?.trim()) return res.status(400).json({ error: 'Query required' })
 
   try {
@@ -198,6 +221,7 @@ app.post('/api/visual', async (req, res) => {
       parentResponse,
       excerpt,
       messageChain,
+      method,
     })
     res.json(visual)
   } catch (err) {

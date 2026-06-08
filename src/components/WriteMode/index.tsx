@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { useEditor, EditorContent } from '@tiptap/react'
+import { useEditor, EditorContent, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import Underline from '@tiptap/extension-underline'
@@ -8,19 +8,22 @@ import TextAlign from '@tiptap/extension-text-align'
 import {
   Bold, Italic, UnderlineIcon, AlignLeft, AlignCenter, AlignRight,
   Check, X, ChevronRight, ChevronDown, BookOpen, Mic, GitBranch,
-  Star, Loader2, Lightbulb, Undo2, Redo2, Send,
+  Star, Loader2, Lightbulb, Undo2, Redo2, Send, Save, Wand2, Crosshair, Sparkles,
 } from 'lucide-react'
 import { diffWords } from 'diff'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useStore } from '../../store/useStore'
 import { streamChat } from '../../lib/claude'
+import { compileStyleGuide, buildEditSystemPrompt, parseEdits, applyEdits } from '../../lib/style'
 import DiffReview, { type DiffChange } from './DiffReview'
+import { Insertion, Deletion, DiffReview as DiffReviewExt, resolveRange, docHasDiff } from './diffExtension'
+import { diffToHtml } from './diffHtml'
+import TunnelVision from './TunnelVision'
+import StylismMode from './StylismMode'
 
 interface AISuggestion {
   id: string
   instruction: string
-  originalText: string
-  suggestedText: string
   diff: DiffChange[]
   accepted: boolean | null
 }
@@ -29,9 +32,6 @@ interface ReviewState {
   suggestionId: string
   instruction: string
   diff: DiffChange[]
-  isPassage: boolean
-  passageText: string
-  suggestedText: string
 }
 
 interface ChatEntry {
@@ -41,13 +41,20 @@ interface ChatEntry {
   suggestionId?: string
 }
 
-function textToHtml(text: string): string {
-  const esc = (s: string) =>
-    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  return text
-    .split(/\n{2,}/)
-    .map((para) => `<p>${esc(para).replace(/\n/g, '<br/>')}</p>`)
-    .join('')
+interface SelectionMenu {
+  top: number
+  left: number
+  text: string
+  from: number
+  to: number
+}
+
+interface TunnelState {
+  sentence: string
+  contextBefore: string
+  contextAfter: string
+  from: number
+  to: number
 }
 
 function htmlHasText(html: string): boolean {
@@ -56,29 +63,34 @@ function htmlHasText(html: string): boolean {
 
 export default function WriteMode() {
   const {
-    documentContent, documentTitle, apiKey, getFullContext,
-    setDocumentContent, setDocumentTitle, setActiveTab, highlightedText, setHighlightedText,
+    documentTitle, apiKey, getFullContext,
+    setDocumentContent, setDocumentTitle, setActiveTab,
     pdfs, sessions, adventures,
+    styleRules, setStyleRules, resetStyleRules,
   } = useStore()
 
-  const explorationNodeCount = adventures.reduce(
-    (sum, a) => sum + a.nodes.filter((n) => n.data.response).length,
-    0
-  )
   const takeawayCount = adventures.reduce((sum, a) => sum + a.takeaways.length, 0)
 
   const [hydrated, setHydrated] = useState(() => useStore.persist.hasHydrated())
   const [aiPrompt, setAiPrompt] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
-  const [streamPreview, setStreamPreview] = useState('')
   const [suggestions, setSuggestions] = useState<AISuggestion[]>([])
   const [review, setReview] = useState<ReviewState | null>(null)
   const [chat, setChat] = useState<ChatEntry[]>([])
   const [contextExpanded, setContextExpanded] = useState<string | null>(null)
   const [wordCount, setWordCount] = useState(0)
+  const [attachedSelection, setAttachedSelection] = useState('')
+  const [selectionMenu, setSelectionMenu] = useState<SelectionMenu | null>(null)
+  const [tunnel, setTunnel] = useState<TunnelState | null>(null)
+  const [stylismOpen, setStylismOpen] = useState(false)
+  const [savedFlash, setSavedFlash] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
 
   const skipEmptySaveRef = useRef(true)
   const chatEndRef = useRef<HTMLDivElement>(null)
+  const editorRef = useRef<Editor | null>(null)
+  const reviewActiveRef = useRef(false)
+  const finishReviewRef = useRef<() => void>(() => {})
 
   useEffect(() => {
     if (useStore.persist.hasHydrated()) {
@@ -90,18 +102,7 @@ export default function WriteMode() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [chat, review, streamPreview, isStreaming])
-
-  const captureSelectionToPrompt = (view: {
-    state: { selection: { from: number; to: number }; doc: { textBetween: (a: number, b: number, c: string) => string } }
-  }): boolean => {
-    const { from, to } = view.state.selection
-    if (from === to) return false
-    const selected = view.state.doc.textBetween(from, to, ' ')
-    setHighlightedText(selected)
-    setAiPrompt((prev) => prev || `Improve this passage: "${selected.slice(0, 200)}"`)
-    return true
-  }
+  }, [chat, review, isStreaming])
 
   const editor = useEditor(
     {
@@ -110,13 +111,24 @@ export default function WriteMode() {
         Underline,
         Highlight.configure({ multicolor: true }),
         TextAlign.configure({ types: ['heading', 'paragraph'] }),
+        Insertion,
+        Deletion,
+        DiffReviewExt.configure({
+          isActive: () => reviewActiveRef.current,
+          onResolveHunk: () => {
+            const ed = editorRef.current
+            if (ed && !docHasDiff(ed.state.doc)) finishReviewRef.current()
+          },
+        }),
         Placeholder.configure({
           placeholder:
             'Begin writing… Your ideas from Context House, Stream, and Exploration are available to Claude.',
         }),
       ],
-      content: documentContent,
+      content: useStore.getState().documentContent,
       onUpdate: ({ editor: ed }) => {
+        // Never persist the transient merged-diff document while reviewing.
+        if (reviewActiveRef.current) return
         if (skipEmptySaveRef.current && ed.isEmpty) {
           const stored = useStore.getState().documentContent
           if (htmlHasText(stored)) return
@@ -125,33 +137,13 @@ export default function WriteMode() {
         setDocumentContent(ed.getHTML())
         setWordCount(ed.getText().split(/\s+/).filter(Boolean).length)
       },
-      editorProps: {
-        handleKeyDown(view, event) {
-          const mod = event.ctrlKey || event.metaKey
-          const key = event.key.toLowerCase()
-
-          if (mod && !event.shiftKey && key === 'z') {
-            editor?.chain().focus().undo().run()
-            return true
-          }
-
-          if (mod && (key === 'y' || (event.shiftKey && key === 'z'))) {
-            if (key === 'y' && captureSelectionToPrompt(view)) return true
-            editor?.chain().focus().redo().run()
-            return true
-          }
-
-          if (event.altKey && event.shiftKey && key === 'a') {
-            captureSelectionToPrompt(view)
-            return true
-          }
-
-          return false
-        },
-      },
     },
     [hydrated]
   )
+
+  useEffect(() => {
+    editorRef.current = editor
+  }, [editor])
 
   useEffect(() => {
     if (!editor || !hydrated) return
@@ -160,150 +152,297 @@ export default function WriteMode() {
       skipEmptySaveRef.current = true
       editor.commands.setContent(stored, false)
       skipEmptySaveRef.current = false
-      setWordCount(editor.getText().split(/\s+/).filter(Boolean).length)
-    } else if (stored) {
-      setWordCount(editor.getText().split(/\s+/).filter(Boolean).length)
     }
+    setWordCount(editor.getText().split(/\s+/).filter(Boolean).length)
   }, [editor, hydrated])
 
   useEffect(() => {
     return () => {
-      if (editor && !editor.isDestroyed && !editor.isEmpty) {
+      if (editor && !editor.isDestroyed && !editor.isEmpty && !reviewActiveRef.current) {
         setDocumentContent(editor.getHTML())
       }
     }
   }, [editor, setDocumentContent])
 
+  /* ── Floating selection toolbar ── */
   useEffect(() => {
-    if (highlightedText && !aiPrompt) {
-      setAiPrompt(`Improve: "${highlightedText.slice(0, 100)}"`)
-    }
-  }, [highlightedText, aiPrompt])
-
-  const applySuggestionText = useCallback(
-    (suggestedText: string, reviewState: ReviewState) => {
-      if (!editor) return false
-      if (reviewState.isPassage) {
-        const fullText = editor.getText()
-        if (!fullText.includes(reviewState.passageText)) return false
-        const updated = fullText.replace(reviewState.passageText, suggestedText)
-        skipEmptySaveRef.current = true
-        editor.commands.setContent(textToHtml(updated))
-        skipEmptySaveRef.current = false
-        setDocumentContent(editor.getHTML())
-      } else {
-        skipEmptySaveRef.current = true
-        editor.commands.setContent(textToHtml(suggestedText))
-        skipEmptySaveRef.current = false
-        setDocumentContent(editor.getHTML())
+    if (!editor) return
+    const update = () => {
+      if (reviewActiveRef.current || !editor.isEditable) {
+        setSelectionMenu(null)
+        return
       }
-      setWordCount(editor.getText().split(/\s+/).filter(Boolean).length)
-      return true
+      const { from, to } = editor.state.selection
+      if (from === to) {
+        setSelectionMenu(null)
+        return
+      }
+      const text = editor.state.doc.textBetween(from, to, ' ').trim()
+      if (!text) {
+        setSelectionMenu(null)
+        return
+      }
+      try {
+        const start = editor.view.coordsAtPos(from)
+        const end = editor.view.coordsAtPos(to)
+        setSelectionMenu({
+          top: Math.min(start.top, end.top),
+          left: (start.left + end.left) / 2,
+          text,
+          from,
+          to,
+        })
+      } catch {
+        setSelectionMenu(null)
+      }
+    }
+    editor.on('selectionUpdate', update)
+    return () => {
+      editor.off('selectionUpdate', update)
+    }
+  }, [editor])
+
+  /* ── Finalize a review once all hunks are resolved ── */
+  const finishReview = useCallback(() => {
+    const ed = editorRef.current
+    if (!ed) return
+    reviewActiveRef.current = false
+    ed.setEditable(true)
+    const html = ed.getHTML()
+    setDocumentContent(html)
+    setWordCount(ed.getText().split(/\s+/).filter(Boolean).length)
+    setReview(null)
+    setAttachedSelection('')
+  }, [setDocumentContent])
+
+  useEffect(() => {
+    finishReviewRef.current = finishReview
+  }, [finishReview])
+
+  const enterReview = useCallback(
+    (currentText: string, newText: string, instruction: string) => {
+      const ed = editorRef.current
+      if (!ed) return
+      const diff = diffWords(currentText, newText) as DiffChange[]
+      const html = diffToHtml(diff)
+      const id = (Date.now() + 1).toString()
+
+      reviewActiveRef.current = true
+      skipEmptySaveRef.current = true
+      ed.commands.setContent(html, false)
+      skipEmptySaveRef.current = false
+      ed.setEditable(false)
+      // Nudge the view so the diff-widget decorations paint immediately.
+      ed.view.dispatch(ed.state.tr.setMeta('diff-refresh', true))
+
+      setSuggestions((prev) => [
+        { id, instruction, diff, accepted: null },
+        ...prev.slice(0, 9),
+      ])
+      setReview({ suggestionId: id, instruction, diff })
+      setChat((prev) => [
+        ...prev,
+        {
+          id,
+          role: 'assistant',
+          content: `Proposed ${diff.filter((d) => d.added || d.removed).length} change${
+            diff.filter((d) => d.added || d.removed).length === 1 ? '' : 's'
+          }. Review them inline, or here.`,
+          suggestionId: id,
+        },
+      ])
     },
-    [editor, setDocumentContent]
+    []
   )
 
+  const acceptAll = useCallback(() => {
+    const ed = editorRef.current
+    if (!ed || !review) return
+    resolveRange(ed.view, 0, ed.state.doc.content.size, 'accept')
+    setSuggestions((prev) =>
+      prev.map((s) => (s.id === review.suggestionId ? { ...s, accepted: true } : s))
+    )
+    finishReview()
+  }, [review, finishReview])
+
+  const rejectAll = useCallback(() => {
+    const ed = editorRef.current
+    if (!ed || !review) return
+    resolveRange(ed.view, 0, ed.state.doc.content.size, 'reject')
+    setSuggestions((prev) =>
+      prev.map((s) => (s.id === review.suggestionId ? { ...s, accepted: false } : s))
+    )
+    finishReview()
+  }, [review, finishReview])
+
   const handleAIAssist = useCallback(async () => {
-    if (!aiPrompt.trim() || !apiKey || !editor) return
+    if (!aiPrompt.trim() || !apiKey || !editor || reviewActiveRef.current) return
 
     const instruction = aiPrompt.trim()
     const userEntryId = Date.now().toString()
     setChat((prev) => [...prev, { id: userEntryId, role: 'user', content: instruction }])
     setAiPrompt('')
     setIsStreaming(true)
-    setStreamPreview('')
 
-    const currentText = editor.getText()
+    const currentText = editor.getText({ blockSeparator: '\n\n' })
     const context = getFullContext()
+    const styleGuide = compileStyleGuide(styleRules)
+    const passage = attachedSelection
+    const isEmptyDoc = currentText.trim().length === 0
 
-    const system = `You are an expert writing assistant embedded in a writing tool.
-You have access to the writer's research context below.
+    const system = isEmptyDoc
+      ? `You are an expert writing assistant. Write the content the writer asks for as clean prose (plain text, paragraphs separated by blank lines). Return ONLY the prose, no commentary, no JSON, no markdown fences.
 
-Your task: Given the writer's instruction and their current document, provide ONLY the improved/new text.
-- If asked to improve a passage, return just the improved version
-- If asked to write new content, return just the new content
-- If asked for general help, return the full improved document text
-- Do NOT include explanations, just the text
-- Match the writer's existing voice and style
-- Keep the same approximate length unless asked to expand/condense
+${styleGuide ? styleGuide + '\n\n' : ''}${context ? `=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : ''}`
+      : buildEditSystemPrompt({ context, styleGuide, scope: 'document' })
 
-${context ? `\n=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : ''}`
+    const user = isEmptyDoc
+      ? `The document is empty.\n\nINSTRUCTION: ${instruction}`
+      : `CURRENT DOCUMENT:
+"""
+${currentText.slice(0, 8000)}
+"""
+${
+  passage
+    ? `\nFOCUS ONLY ON THIS PASSAGE (edit within it, leave everything else untouched):\n"""${passage.slice(0, 2000)}"""\n`
+    : ''
+}
+INSTRUCTION: ${instruction}`
 
-    const messages: { role: 'user' | 'assistant'; content: string }[] = [
-      {
-        role: 'user',
-        content: `Current document:\n\n${currentText.slice(0, 6000)}\n\n---\nInstruction: ${instruction}`,
-      },
-    ]
-
-    let suggestion = ''
+    let raw = ''
     await streamChat(
-      messages,
+      [{ role: 'user', content: user }],
       system,
       apiKey,
       (chunk) => {
-        suggestion += chunk
-        setStreamPreview(suggestion)
+        raw += chunk
       },
       () => {
-        const isPassage = !!highlightedText
-        const targetText = isPassage ? highlightedText : currentText
-        const diffResult = diffWords(targetText, suggestion) as DiffChange[]
-        const id = (Date.now() + 1).toString()
-        const newSuggestion: AISuggestion = {
-          id,
-          instruction,
-          originalText: targetText,
-          suggestedText: suggestion,
-          diff: diffResult,
-          accepted: null,
-        }
-        setSuggestions((prev) => [newSuggestion, ...prev.slice(0, 9)])
-        setReview({
-          suggestionId: id,
-          instruction,
-          diff: diffResult,
-          isPassage,
-          passageText: targetText,
-          suggestedText: suggestion,
-        })
-        setChat((prev) => [...prev, { id, role: 'assistant', content: suggestion, suggestionId: id }])
         setIsStreaming(false)
-        setStreamPreview('')
+        if (isEmptyDoc) {
+          const generated = raw.trim()
+          if (!generated) {
+            setChat((prev) => [
+              ...prev,
+              { id: (Date.now() + 1).toString(), role: 'assistant', content: 'Nothing was generated — try again.' },
+            ])
+            return
+          }
+          enterReview(currentText, generated, instruction)
+          return
+        }
+        const edits = parseEdits(raw)
+        let newText: string
+        if (edits && edits.length > 0) {
+          newText = applyEdits(currentText, edits).text
+        } else if (edits && edits.length === 0) {
+          setChat((prev) => [
+            ...prev,
+            { id: (Date.now() + 1).toString(), role: 'assistant', content: 'No changes needed — your text already works here.' },
+          ])
+          return
+        } else {
+          // Model ignored the JSON protocol; treat output as a full replacement.
+          newText = raw.trim()
+        }
+
+        if (!newText.trim() || newText.trim() === currentText.trim()) {
+          setChat((prev) => [
+            ...prev,
+            { id: (Date.now() + 1).toString(), role: 'assistant', content: 'No changes needed — your text already works here.' },
+          ])
+          return
+        }
+        enterReview(currentText, newText, instruction)
+      },
+      (errMessage) => {
+        setIsStreaming(false)
+        setChat((prev) => [
+          ...prev,
+          { id: (Date.now() + 1).toString(), role: 'assistant', content: `⚠️ ${errMessage}. Please try again.` },
+        ])
       }
     )
-  }, [aiPrompt, apiKey, editor, getFullContext, highlightedText])
+  }, [aiPrompt, apiKey, editor, getFullContext, styleRules, attachedSelection, enterReview])
 
-  const acceptReview = () => {
-    if (!review) return
-    const ok = applySuggestionText(review.suggestedText, review)
-    if (!ok) return
-    setSuggestions((prev) =>
-      prev.map((s) => (s.id === review.suggestionId ? { ...s, accepted: true } : s))
-    )
-    setReview(null)
-    setHighlightedText('')
-  }
+  /* ── Tunnel vision ── */
+  const openTunnel = useCallback(
+    (from: number, to: number, text: string) => {
+      const ed = editorRef.current
+      if (!ed) return
+      const size = ed.state.doc.content.size
+      const contextBefore = ed.state.doc.textBetween(Math.max(0, from - 400), from, ' ')
+      const contextAfter = ed.state.doc.textBetween(to, Math.min(size, to + 400), ' ')
+      setSelectionMenu(null)
+      setTunnel({ sentence: text, contextBefore, contextAfter, from, to })
+    },
+    []
+  )
 
-  const rejectReview = () => {
-    if (!review) return
-    setSuggestions((prev) =>
-      prev.map((s) => (s.id === review.suggestionId ? { ...s, accepted: false } : s))
-    )
-    setReview(null)
+  const applyTunnel = useCallback(
+    (newText: string) => {
+      const ed = editorRef.current
+      if (!ed || !tunnel) return
+      ed.chain().focus().insertContentAt({ from: tunnel.from, to: tunnel.to }, newText).run()
+      setDocumentContent(ed.getHTML())
+      setWordCount(ed.getText().split(/\s+/).filter(Boolean).length)
+      setTunnel(null)
+    },
+    [tunnel, setDocumentContent]
+  )
+
+  /* ── Save ── */
+  const handleSave = useCallback(() => {
+    const ed = editorRef.current
+    if (ed && !reviewActiveRef.current) setDocumentContent(ed.getHTML())
+    setSavedFlash(true)
+    window.setTimeout(() => setSavedFlash(false), 1400)
+  }, [setDocumentContent])
+
+  /* ── Global keyboard ── */
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey
+      if (mod && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        handleSave()
+        return
+      }
+      if (e.key === 'Escape') {
+        if (tunnel) setTunnel(null)
+        else if (stylismOpen) setStylismOpen(false)
+        else if (reviewActiveRef.current) rejectAll()
+        return
+      }
+      if (reviewActiveRef.current && mod && e.key === 'Enter') {
+        e.preventDefault()
+        acceptAll()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [handleSave, tunnel, stylismOpen, acceptAll, rejectAll])
+
+  /* ── Drag selection into prompt ── */
+  const handlePromptDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const text =
+      e.dataTransfer.getData('text/plain') ||
+      window.getSelection()?.toString() ||
+      ''
+    const trimmed = text.trim()
+    if (trimmed) setAttachedSelection(trimmed)
   }
 
   const contextSections = [
     { id: 'pdfs', label: 'Documents', count: pdfs.length, icon: <BookOpen size={12} /> },
     { id: 'stream', label: 'Stream Sessions', count: sessions.length, icon: <Mic size={12} /> },
-    {
-      id: 'exploration',
-      label: 'Adventures',
-      count: adventures.length,
-      icon: <GitBranch size={12} />,
-    },
+    { id: 'exploration', label: 'Adventures', count: adventures.length, icon: <GitBranch size={12} /> },
     { id: 'takeaways', label: 'Takeaways', count: takeawayCount, icon: <Lightbulb size={12} /> },
   ]
+
+  const changeCount = review ? review.diff.filter((d) => d.added || d.removed).length : 0
 
   if (!hydrated) {
     return (
@@ -315,7 +454,7 @@ ${context ? `\n=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : '
 
   return (
     <div className="h-full flex overflow-hidden">
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0 relative">
         <div className="flex-shrink-0 flex items-center justify-between border-b border-black/8 bg-white/30 backdrop-blur px-4 py-2">
           <div className="flex items-center gap-1 min-w-0">
             <input
@@ -336,7 +475,7 @@ ${context ? `\n=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : '
             <button
               onClick={() => editor?.chain().focus().redo().run()}
               disabled={!editor?.can().redo()}
-              title="Redo (Ctrl+Y)"
+              title="Redo (Ctrl+Shift+Z)"
               className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70 disabled:opacity-25"
             >
               <Redo2 size={14} />
@@ -366,33 +505,119 @@ ${context ? `\n=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : '
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-3 flex-shrink-0">
+          <div className="flex items-center gap-2 flex-shrink-0">
             <span className="text-xs text-black/35">{wordCount} words</span>
-            <button onClick={() => setActiveTab('grade')} className="btn-ghost flex items-center gap-2 text-xs">
+            <button
+              onClick={() => setStylismOpen(true)}
+              className="btn-ghost flex items-center gap-1.5 text-xs"
+              title="Tune the AI's writing style"
+            >
+              <Wand2 size={12} />
+              Stylism
+            </button>
+            <button
+              onClick={handleSave}
+              className={`btn-ghost flex items-center gap-1.5 text-xs ${savedFlash ? 'text-green-700' : ''}`}
+              title="Save (Ctrl+S)"
+            >
+              {savedFlash ? <Check size={12} /> : <Save size={12} />}
+              {savedFlash ? 'Saved' : 'Save'}
+            </button>
+            <button onClick={() => setActiveTab('grade')} className="btn-ghost flex items-center gap-1.5 text-xs">
               <Star size={12} />
               Grade
             </button>
           </div>
         </div>
 
+        {/* Inline review bar */}
+        <AnimatePresence>
+          {review && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              className="flex-shrink-0 flex items-center justify-between gap-3 border-b border-black/8 bg-blue-500/[0.06] px-4 py-2"
+            >
+              <span className="text-xs text-black/55">
+                {changeCount} suggested change{changeCount === 1 ? '' : 's'} — review inline, or:
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={rejectAll}
+                  className="flex items-center gap-1.5 rounded-lg border border-black/10 bg-black/[0.03] px-3 py-1.5 text-xs font-medium text-black/55 hover:bg-black/[0.06]"
+                >
+                  <X size={13} /> Reject all <kbd>Esc</kbd>
+                </button>
+                <button
+                  onClick={acceptAll}
+                  className="flex items-center gap-1.5 rounded-lg border border-green-600/25 bg-green-600/10 px-3 py-1.5 text-xs font-medium text-green-800 hover:bg-green-600/15"
+                >
+                  <Check size={13} /> Accept all <kbd>⌘↵</kbd>
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <div className="flex-1 overflow-y-auto">
           <div className="tiptap-editor max-w-3xl mx-auto min-h-full">
             <EditorContent editor={editor} className="min-h-full" />
           </div>
         </div>
+
+        {/* Floating selection toolbar */}
+        <AnimatePresence>
+          {selectionMenu && !review && (
+            <motion.div
+              initial={{ opacity: 0, y: 6, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 6, scale: 0.96 }}
+              transition={{ duration: 0.12 }}
+              className="selection-toolbar"
+              style={{
+                top: selectionMenu.top - 46,
+                left: selectionMenu.left,
+              }}
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              <button
+                className="selection-toolbar-btn"
+                onClick={() => openTunnel(selectionMenu.from, selectionMenu.to, selectionMenu.text)}
+              >
+                <Crosshair size={13} />
+                Focus
+              </button>
+              <span className="selection-toolbar-sep" />
+              <button
+                className="selection-toolbar-btn"
+                onClick={() => {
+                  setAttachedSelection(selectionMenu.text)
+                  setSelectionMenu(null)
+                }}
+              >
+                <Sparkles size={13} />
+                Add to chat
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <aside className="w-[340px] flex-shrink-0 border-l border-black/8 bg-white/25 backdrop-blur flex flex-col overflow-hidden">
         <div className="flex-shrink-0 border-b border-black/8 px-4 py-3">
           <p className="text-sm font-semibold text-black/70">Assistant</p>
-          <p className="text-[11px] text-black/40 mt-0.5">Select text + Ctrl+Y to capture a passage</p>
+          <p className="text-[11px] text-black/40 mt-0.5">
+            Select text for Focus, or drag it into the prompt below
+          </p>
         </div>
 
         <div className="flex-1 overflow-y-auto p-3 space-y-3">
           {chat.length === 0 && !isStreaming && (
             <div className="rounded-xl border border-dashed border-black/10 p-4 text-center">
               <p className="text-xs text-black/40 leading-relaxed">
-                Ask Claude to improve a passage, expand an idea, or rewrite a section.
+                Ask Claude to refine a passage. Edits are surgical and shown inline so you can
+                accept or reject each one.
               </p>
             </div>
           )}
@@ -413,11 +638,7 @@ ${context ? `\n=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : '
                         : 'bg-white/60 border border-black/8 text-black/70'
                     }`}
                   >
-                    {entry.role === 'user' ? (
-                      <p>{entry.content}</p>
-                    ) : (
-                      <p className="line-clamp-6 whitespace-pre-wrap">{entry.content}</p>
-                    )}
+                    <p className="whitespace-pre-wrap">{entry.content}</p>
                     {entry.role === 'assistant' && suggestion?.accepted === true && (
                       <p className="mt-1.5 flex items-center gap-1 text-[10px] text-green-700">
                         <Check size={10} /> Applied
@@ -434,8 +655,8 @@ ${context ? `\n=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : '
                   <DiffReview
                     instruction={review.instruction}
                     diff={review.diff}
-                    onAccept={acceptReview}
-                    onReject={rejectReview}
+                    onAccept={acceptAll}
+                    onReject={rejectAll}
                   />
                 )}
               </div>
@@ -445,14 +666,10 @@ ${context ? `\n=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : '
           {isStreaming && (
             <div className="flex justify-start">
               <div className="max-w-[92%] rounded-xl border border-black/8 bg-white/60 px-3 py-2 text-xs text-black/60">
-                {streamPreview ? (
-                  <p className="whitespace-pre-wrap line-clamp-8">{streamPreview}</p>
-                ) : (
-                  <div className="flex items-center gap-2 text-black/40">
-                    <Loader2 size={12} className="animate-spin" />
-                    Writing…
-                  </div>
-                )}
+                <div className="flex items-center gap-2 text-black/40">
+                  <Loader2 size={12} className="animate-spin" />
+                  Composing precise edits…
+                </div>
               </div>
             </div>
           )}
@@ -505,16 +722,42 @@ ${context ? `\n=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : '
           </AnimatePresence>
         </div>
 
-        <div className="flex-shrink-0 border-t border-black/8 p-3 space-y-2">
-          {highlightedText && (
-            <div className="flex items-center gap-2 rounded-lg bg-black/[0.04] px-2 py-1.5">
-              <span className="text-[10px] text-black/45 flex-shrink-0">Selection:</span>
-              <span className="text-[10px] text-black/55 line-clamp-1 flex-1">"{highlightedText.slice(0, 80)}"</span>
-              <button type="button" onClick={() => setHighlightedText('')} className="text-black/30 hover:text-black/50">
-                <X size={10} />
-              </button>
-            </div>
+        <div
+          className={`flex-shrink-0 border-t border-black/8 p-3 space-y-2 relative ${dragOver ? 'prompt-dropzone-active' : ''}`}
+          onDragOver={(e) => {
+            e.preventDefault()
+            setDragOver(true)
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handlePromptDrop}
+        >
+          <AnimatePresence>
+            {attachedSelection && (
+              <motion.div
+                initial={{ opacity: 0, y: 8, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                className="attached-popup"
+              >
+                <div className="flex items-start gap-2">
+                  <span className="attached-popup-tag">Passage</span>
+                  <p className="attached-popup-text">{attachedSelection}</p>
+                  <button
+                    type="button"
+                    onClick={() => setAttachedSelection('')}
+                    className="text-black/30 hover:text-black/60 flex-shrink-0"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {dragOver && (
+            <div className="prompt-drop-hint">Drop to attach passage</div>
           )}
+
           <div className="flex items-end gap-2">
             <textarea
               value={aiPrompt}
@@ -526,13 +769,13 @@ ${context ? `\n=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : '
                 }
               }}
               rows={2}
-              placeholder="Ask Claude to help…"
+              placeholder={attachedSelection ? 'How should this passage change?' : 'Ask Claude to refine your writing…'}
               className="glass-input flex-1 resize-none px-3 py-2 text-sm min-h-[2.5rem]"
             />
             <button
               type="button"
               onClick={handleAIAssist}
-              disabled={isStreaming || !aiPrompt.trim() || !apiKey}
+              disabled={isStreaming || !aiPrompt.trim() || !apiKey || !!review}
               className="btn-primary flex h-10 w-10 flex-shrink-0 items-center justify-center disabled:opacity-40"
               title="Send"
             >
@@ -541,6 +784,33 @@ ${context ? `\n=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : '
           </div>
         </div>
       </aside>
+
+      {/* Overlays */}
+      <AnimatePresence>
+        {tunnel && editor && (
+          <TunnelVision
+            sentence={tunnel.sentence}
+            contextBefore={tunnel.contextBefore}
+            contextAfter={tunnel.contextAfter}
+            apiKey={apiKey}
+            styleGuide={compileStyleGuide(styleRules)}
+            researchContext={getFullContext()}
+            onApply={applyTunnel}
+            onClose={() => setTunnel(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {stylismOpen && (
+          <StylismMode
+            rules={styleRules}
+            onChange={setStyleRules}
+            onReset={resetStyleRules}
+            onClose={() => setStylismOpen(false)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }
