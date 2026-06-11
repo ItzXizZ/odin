@@ -5,11 +5,15 @@ import { useStore, type GradeResult } from '../../store/useStore'
 import { syncChat } from '../../lib/claude'
 
 export default function GradeMode() {
-  const { documentContent, documentTitle, rubric, gradeResult, isGrading, apiKey, setRubric, setGradeResult, setIsGrading, setActiveTab } = useStore()
+  const { documents, activeDocumentId, rubric, gradeResult, isGrading, apiKey, setRubric, setGradeResult, setIsGrading, setActiveTab } = useStore()
 
   const [expandedCriterion, setExpandedCriterion] = useState<number | null>(null)
   const [error, setError] = useState('')
 
+  const activeDoc = documents.find((d) => d.id === activeDocumentId) ?? documents[0]
+  const activeDocTab = activeDoc?.tabs.find((t) => t.id === activeDoc.activeTabId) ?? activeDoc?.tabs[0]
+  const documentContent = activeDocTab?.content ?? ''
+  const documentTitle = activeDoc?.title ?? 'Untitled'
   const plainText = documentContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
   const wordCount = plainText.split(/\s+/).filter(Boolean).length
 

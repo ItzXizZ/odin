@@ -15,8 +15,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 import { Plus, Trash2, PenTool, X, Sparkles, LayoutGrid } from 'lucide-react'
 import { nanoid } from 'nanoid'
-import { motion, AnimatePresence } from 'framer-motion'
-import { useStore, type ExplorationNodeData, type Takeaway } from '../../store/useStore'
+import { useStore, type ExplorationNodeData } from '../../store/useStore'
 import { streamChat } from '../../lib/claude'
 import { researchQuery } from '../../lib/research'
 import ExplorationNode from './ExplorationNode'
@@ -62,8 +61,6 @@ export default function ExplorationMode() {
     setExplorationNodes,
     setExplorationEdges,
     updateNodeResponse,
-    addTakeaway,
-    removeTakeaway,
     setActiveTab,
     getFullContext,
   } = useStore()
@@ -71,13 +68,10 @@ export default function ExplorationMode() {
   const activeAdventure = adventures.find((a) => a.id === activeAdventureId)
   const savedNodes = activeAdventure?.nodes ?? []
   const savedEdges = activeAdventure?.edges ?? []
-  const takeaways = activeAdventure?.takeaways ?? []
-
   const [nodes, setNodes, onNodesChange] = useNodesState<ExplorationNodeData>(savedNodes as any)
   const [edges, setEdges, onEdgesChange] = useEdgesState(savedEdges)
   const [prompt, setPrompt] = useState('')
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
-  const [takeawayInput, setTakeawayInput] = useState('')
 
   const flowWrapperRef = useRef<HTMLDivElement>(null)
   const promptInputRef = useRef<HTMLInputElement>(null)
@@ -778,12 +772,6 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
     }
   }, [nodeCount])
 
-  const handleAddTakeaway = () => {
-    if (!takeawayInput.trim()) return
-    addTakeaway({ id: nanoid(), text: takeawayInput.trim() })
-    setTakeawayInput('')
-  }
-
   const rankedSources = useMemo(
     () =>
       aggregateSources(
@@ -941,60 +929,13 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         )}
       </div>
 
-      {/* Right sidebar */}
-      <div className="w-72 border-l border-white/10 bg-[#0f0f0f] flex flex-col overflow-hidden">
-        {/* Live Source Update — read-only feed, auto-updates from cited links */}
-        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 min-w-0">
-          <div className="flex items-center justify-between">
-            <span className="section-title text-sm">Live Source Update</span>
-            <span className="text-xs text-white/30">by Relevance</span>
-          </div>
+      {/* Right sidebar — collapsible sources */}
+      <div className="w-72 border-l border-black/8 bg-white/20 flex flex-col overflow-hidden backdrop-blur-sm">
+        <div className="flex-1 overflow-y-auto p-3 min-w-0">
           <LiveSourceFeed sources={rankedSources} />
         </div>
 
-        {/* Takeaways */}
-        <div className="border-t border-white/10 p-4 space-y-3">
-          <span className="section-title text-sm">Takeaways</span>
-          <p className="text-xs text-white/30">sorted by relevance</p>
-
-          <div className="max-h-40 overflow-y-auto space-y-1">
-            <AnimatePresence>
-              {takeaways.map((t) => (
-                <motion.div
-                  key={t.id}
-                  initial={{ opacity: 0, x: 8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -8 }}
-                  className="group flex items-start gap-2 rounded-lg border border-white/8 bg-white/3 p-2"
-                >
-                  <p className="flex-1 text-xs text-white/60 leading-relaxed">{t.text}</p>
-                  <button
-                    onClick={() => removeTakeaway(t.id)}
-                    className="hidden group-hover:block text-white/30 hover:text-red-400"
-                  >
-                    <Trash2 size={10} />
-                  </button>
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          </div>
-
-          <div className="flex gap-2">
-            <input
-              value={takeawayInput}
-              onChange={(e) => setTakeawayInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleAddTakeaway()}
-              placeholder="Add takeaway..."
-              className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs 
-                         text-white/70 outline-none focus:border-white/40 placeholder-white/20 font-caveat text-sm"
-            />
-            <button onClick={handleAddTakeaway} className="btn-ghost text-xs px-2">
-              <Plus size={12} />
-            </button>
-          </div>
-        </div>
-
-        <div className="p-4 border-t border-white/10 min-w-0">
+        <div className="p-3 border-t border-black/8 min-w-0">
           <button onClick={() => setActiveTab('write')} className="btn-primary w-full flex items-center justify-center gap-2">
             <PenTool size={14} />
             Write

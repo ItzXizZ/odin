@@ -3,9 +3,89 @@ import { persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import type { Node, Edge } from 'reactflow'
 import type { SourceRef } from '../lib/sources'
-import { DEFAULT_STYLE_RULES, type StyleRule } from '../lib/style'
+import {
+  DEFAULT_STYLE_RULES,
+  migrateStyleRule,
+  computeStyleEdges,
+  connectionKey,
+  ruleSimilarity,
+  type StyleRule,
+  type StyleConnectionBonus,
+  type StyleActivation,
+} from '../lib/style'
 
-export type AppTab = 'context' | 'stream' | 'exploration' | 'write' | 'grade'
+export type AppTab = 'context' | 'documents' | 'stream' | 'exploration' | 'write' | 'stylism' | 'grade'
+
+/** A sub-document within a writing project, like Google Docs tabs. */
+export interface DocTab {
+  id: string
+  name: string
+  content: string
+}
+
+export interface ContextConversation {
+  id: string
+  name: string
+  transcript: string
+  questions?: string[]
+  source: 'upload' | 'stream'
+  sourceSessionId?: string
+  uploadedAt: number
+}
+
+export interface DocumentContext {
+  pdfs: PDFDocument[]
+  images: ImageDocument[]
+  conversations: ContextConversation[]
+  linkedAdventureIds: string[]
+}
+
+export interface WritingDocument {
+  id: string
+  title: string
+  tabs: DocTab[]
+  activeTabId: string
+  context: DocumentContext
+  createdAt: number
+  updatedAt: number
+}
+
+function emptyDocumentContext(): DocumentContext {
+  return { pdfs: [], images: [], conversations: [], linkedAdventureIds: [] }
+}
+
+function makeDocument(title = 'Untitled', content = ''): WritingDocument {
+  const now = Date.now()
+  const tab: DocTab = { id: nanoid(), name: 'Tab 1', content }
+  return {
+    id: nanoid(),
+    title,
+    tabs: [tab],
+    activeTabId: tab.id,
+    context: emptyDocumentContext(),
+    createdAt: now,
+    updatedAt: now,
+  }
+}
+
+function patchActiveDocContext(
+  s: { documents: WritingDocument[]; activeDocumentId: string | null },
+  patch: (ctx: DocumentContext) => DocumentContext
+): WritingDocument[] {
+  return patchActiveDoc(s, (d) => ({
+    ...d,
+    context: patch(d.context ?? emptyDocumentContext()),
+  }))
+}
+
+function patchActiveDoc(
+  s: { documents: WritingDocument[]; activeDocumentId: string | null },
+  patch: (doc: WritingDocument) => WritingDocument
+): WritingDocument[] {
+  return s.documents.map((d) =>
+    d.id === s.activeDocumentId ? { ...patch(d), updatedAt: Date.now() } : d
+  )
+}
 
 export interface PDFDocument {
   id: string
@@ -112,6 +192,79 @@ function patchActiveAdventure(
   return adventures.map((a) => (a.id === activeAdventureId ? patch(a) : a))
 }
 
+/* ── Stylism neural mechanics ── */
+const DIRECT_GAIN = 1.0 // weight added to a directly referenced rule
+const HOP_DECAY = 0.55 // signal strength multiplier per hop (Moneta uses 0.85 visually; weights need a steeper falloff)
+const MAX_HOPS = 2
+const HEBBIAN_STEP = 0.08 // connection bonus added per co-activation
+const HEBBIAN_CAP = 0.6
+
+/**
+ * Spread activation from directly reinforced rules through the network.
+ * Neighbors fire stochastically: stronger edges are more likely to carry the
+ * signal, and the carried gain is itself jittered, so growth around a hot
+ * neuron is organic rather than uniform.
+ */
+function spreadActivation(
+  rules: StyleRule[],
+  connections: StyleConnectionBonus[],
+  directIds: string[]
+): { id: string; from: string; amount: number }[] {
+  const edges = computeStyleEdges(rules, connections)
+  const neighbors = new Map<string, { id: string; strength: number }[]>()
+  for (const e of edges) {
+    if (!neighbors.has(e.a)) neighbors.set(e.a, [])
+    if (!neighbors.has(e.b)) neighbors.set(e.b, [])
+    neighbors.get(e.a)!.push({ id: e.b, strength: e.strength })
+    neighbors.get(e.b)!.push({ id: e.a, strength: e.strength })
+  }
+
+  const spill: { id: string; from: string; amount: number }[] = []
+  const visited = new Set(directIds)
+  let frontier = directIds.map((id) => ({ id, signal: DIRECT_GAIN }))
+
+  for (let hop = 1; hop <= MAX_HOPS; hop++) {
+    const next: { id: string; signal: number }[] = []
+    for (const { id, signal } of frontier) {
+      for (const nb of neighbors.get(id) ?? []) {
+        if (visited.has(nb.id)) continue
+        // Stochastic firing: edge strength sets the odds the synapse carries.
+        const fireChance = 0.25 + nb.strength * 0.65
+        if (Math.random() > fireChance) continue
+        visited.add(nb.id)
+        const jitter = 0.6 + Math.random() * 0.8
+        const amount = signal * HOP_DECAY * nb.strength * jitter
+        if (amount < 0.02) continue
+        spill.push({ id: nb.id, from: id, amount })
+        next.push({ id: nb.id, signal: signal * HOP_DECAY * nb.strength })
+      }
+    }
+    frontier = next
+    if (frontier.length === 0) break
+  }
+  return spill
+}
+
+function bumpHebbian(
+  connections: StyleConnectionBonus[],
+  pairs: [string, string][]
+): StyleConnectionBonus[] {
+  const map = new Map(connections.map((c) => [`${c.a}|${c.b}`, { ...c }]))
+  for (const [rawA, rawB] of pairs) {
+    const [a, b] = connectionKey(rawA, rawB)
+    if (a === b) continue
+    const key = `${a}|${b}`
+    const existing = map.get(key)
+    if (existing) {
+      existing.bonus = Math.min(HEBBIAN_CAP, existing.bonus + HEBBIAN_STEP)
+      existing.coActivations += 1
+    } else {
+      map.set(key, { a, b, bonus: HEBBIAN_STEP, coActivations: 1 })
+    }
+  }
+  return [...map.values()]
+}
+
 export interface GradeResult {
   overallScore: number
   rubricScores: { criterion: string; score: number; maxScore: number; feedback: string }[]
@@ -126,10 +279,6 @@ interface AppState {
   apiKey: string
   showSettings: boolean
 
-  // Context House
-  pdfs: PDFDocument[]
-  images: ImageDocument[]
-
   // Stream of Consciousness
   sessions: TranscriptSession[]
   currentTranscript: string
@@ -139,12 +288,16 @@ interface AppState {
   activeAdventureId: string | null
   liveSourceContext: string
 
-  // Write Mode
-  documentContent: string
-  documentTitle: string
+  // Write Mode — multiple documents/projects
+  documents: WritingDocument[]
+  activeDocumentId: string | null
   writingPrompt: string
   highlightedText: string
   styleRules: StyleRule[]
+  /** Learned Hebbian connection bonuses between style rules. */
+  styleConnections: StyleConnectionBonus[]
+  /** Last reinforcement event — consumed by the Stylism network animation. */
+  lastStyleActivation: StyleActivation | null
 
   // Grade Mode
   rubric: string
@@ -164,6 +317,10 @@ interface AppState {
   removeImage: (id: string) => void
   updateImageDescription: (id: string, description: string) => void
 
+  linkAdventure: (adventureId: string) => void
+  unlinkAdventure: (adventureId: string) => void
+  getActiveDocumentContext: () => DocumentContext
+
   addSession: (session: TranscriptSession) => void
   updateCurrentTranscript: (text: string) => void
 
@@ -181,10 +338,31 @@ interface AppState {
 
   setDocumentContent: (content: string) => void
   setDocumentTitle: (title: string) => void
+  createDocument: (title?: string) => string
+  deleteDocument: (id: string) => void
+  setActiveDocumentId: (id: string) => void
+  getActiveDocument: () => WritingDocument | null
+  addDocTab: (name?: string) => string
+  deleteDocTab: (tabId: string) => void
+  renameDocTab: (tabId: string, name: string) => void
+  setActiveDocTab: (tabId: string) => void
+  getActiveTab: () => DocTab | null
   setWritingPrompt: (prompt: string) => void
   setHighlightedText: (text: string) => void
   setStyleRules: (rules: StyleRule[]) => void
   resetStyleRules: () => void
+  /**
+   * Reinforce rules from stylistic feedback: direct hits grow fully, then the
+   * signal spreads stochastically through connected neighbors (2 hops, decaying
+   * like Moneta's neural propagation). Rules reinforced together wire together.
+   */
+  reinforceStyleRules: (ruleIds: string[]) => void
+  /** Add a rule born from feedback, wired to its related rules. Returns id. */
+  addStyleRule: (rule: { label: string; instruction: string; relatedRuleIds?: string[]; source?: StyleRule['source'] }) => string
+  editStyleRule: (id: string, patch: Partial<Pick<StyleRule, 'label' | 'instruction' | 'enabled'>>) => void
+  deleteStyleRule: (id: string) => void
+  setStyleRulePosition: (id: string, x: number, y: number) => void
+  clearStyleActivation: () => void
 
   setRubric: (rubric: string) => void
   setGradeResult: (result: GradeResult | null) => void
@@ -200,9 +378,6 @@ export const useStore = create<AppState>()(
       apiKey: '',
       showSettings: false,
 
-      pdfs: [],
-      images: [],
-
       sessions: [],
       currentTranscript: '',
 
@@ -212,11 +387,15 @@ export const useStore = create<AppState>()(
       })(),
       liveSourceContext: '',
 
-      documentContent: '',
-      documentTitle: 'Untitled',
+      ...(() => {
+        const first = makeDocument()
+        return { documents: [first], activeDocumentId: first.id }
+      })(),
       writingPrompt: '',
       highlightedText: '',
       styleRules: DEFAULT_STYLE_RULES,
+      styleConnections: [],
+      lastStyleActivation: null,
 
       rubric: `Thesis & Argument (25 pts): Clear, debatable thesis with well-supported arguments
 Evidence & Analysis (25 pts): Relevant evidence with deep critical analysis
@@ -230,15 +409,56 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
       setApiKey: (key) => set({ apiKey: key }),
       setShowSettings: (v) => set({ showSettings: v }),
 
-      addPDF: (pdf) => set((s) => ({ pdfs: [...s.pdfs, pdf] })),
-      removePDF: (id) => set((s) => ({ pdfs: s.pdfs.filter((p) => p.id !== id) })),
+      addPDF: (pdf) =>
+        set((s) => ({ documents: patchActiveDocContext(s, (ctx) => ({ ...ctx, pdfs: [...ctx.pdfs, pdf] })) })),
+      removePDF: (id) =>
+        set((s) => ({
+          documents: patchActiveDocContext(s, (ctx) => ({ ...ctx, pdfs: ctx.pdfs.filter((p) => p.id !== id) })),
+        })),
       updatePDFSummary: (id, summary) =>
-        set((s) => ({ pdfs: s.pdfs.map((p) => (p.id === id ? { ...p, summary } : p)) })),
+        set((s) => ({
+          documents: patchActiveDocContext(s, (ctx) => ({
+            ...ctx,
+            pdfs: ctx.pdfs.map((p) => (p.id === id ? { ...p, summary } : p)),
+          })),
+        })),
 
-      addImage: (img) => set((s) => ({ images: [...s.images, img] })),
-      removeImage: (id) => set((s) => ({ images: s.images.filter((i) => i.id !== id) })),
+      addImage: (img) =>
+        set((s) => ({ documents: patchActiveDocContext(s, (ctx) => ({ ...ctx, images: [...ctx.images, img] })) })),
+      removeImage: (id) =>
+        set((s) => ({
+          documents: patchActiveDocContext(s, (ctx) => ({ ...ctx, images: ctx.images.filter((i) => i.id !== id) })),
+        })),
       updateImageDescription: (id, description) =>
-        set((s) => ({ images: s.images.map((i) => (i.id === id ? { ...i, description } : i)) })),
+        set((s) => ({
+          documents: patchActiveDocContext(s, (ctx) => ({
+            ...ctx,
+            images: ctx.images.map((i) => (i.id === id ? { ...i, description } : i)),
+          })),
+        })),
+
+      linkAdventure: (adventureId) =>
+        set((s) => {
+          if (!s.adventures.some((a) => a.id === adventureId)) return s
+          return {
+            documents: patchActiveDocContext(s, (ctx) =>
+              ctx.linkedAdventureIds.includes(adventureId)
+                ? ctx
+                : { ...ctx, linkedAdventureIds: [...ctx.linkedAdventureIds, adventureId] }
+            ),
+          }
+        }),
+      unlinkAdventure: (adventureId) =>
+        set((s) => ({
+          documents: patchActiveDocContext(s, (ctx) => ({
+            ...ctx,
+            linkedAdventureIds: ctx.linkedAdventureIds.filter((id) => id !== adventureId),
+          })),
+        })),
+      getActiveDocumentContext: () => {
+        const doc = get().getActiveDocument()
+        return doc?.context ?? emptyDocumentContext()
+      },
 
       addSession: (session) => set((s) => ({ sessions: [session, ...s.sessions] })),
       updateCurrentTranscript: (text) => set({ currentTranscript: text }),
@@ -311,12 +531,186 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
         set((s) => (s.adventures.some((a) => a.id === id) ? { activeAdventureId: id } : s)),
       setLiveSourceContext: (text) => set({ liveSourceContext: text }),
 
-      setDocumentContent: (content) => set({ documentContent: content }),
-      setDocumentTitle: (title) => set({ documentTitle: title }),
+      setDocumentContent: (content) =>
+        set((s) => ({
+          documents: patchActiveDoc(s, (d) => ({
+            ...d,
+            tabs: d.tabs.map((t) => (t.id === d.activeTabId ? { ...t, content } : t)),
+          })),
+        })),
+      setDocumentTitle: (title) =>
+        set((s) => ({
+          documents: patchActiveDoc(s, (d) => ({ ...d, title })),
+        })),
+      createDocument: (title) => {
+        const doc = makeDocument(title ?? 'Untitled')
+        set((s) => ({ documents: [doc, ...s.documents], activeDocumentId: doc.id }))
+        return doc.id
+      },
+      deleteDocument: (id) =>
+        set((s) => {
+          if (s.documents.length <= 1) return s
+          const documents = s.documents.filter((d) => d.id !== id)
+          const activeDocumentId =
+            s.activeDocumentId === id ? documents[0]?.id ?? null : s.activeDocumentId
+          return { documents, activeDocumentId }
+        }),
+      setActiveDocumentId: (id) =>
+        set((s) => (s.documents.some((d) => d.id === id) ? { activeDocumentId: id } : s)),
+      getActiveDocument: () => {
+        const s = get()
+        return s.documents.find((d) => d.id === s.activeDocumentId) ?? s.documents[0] ?? null
+      },
+      addDocTab: (name) => {
+        const tab: DocTab = { id: nanoid(), name: name ?? '', content: '' }
+        set((s) => ({
+          documents: patchActiveDoc(s, (d) => ({
+            ...d,
+            tabs: [...d.tabs, { ...tab, name: tab.name || `Tab ${d.tabs.length + 1}` }],
+            activeTabId: tab.id,
+          })),
+        }))
+        return tab.id
+      },
+      deleteDocTab: (tabId) =>
+        set((s) => ({
+          documents: patchActiveDoc(s, (d) => {
+            if (d.tabs.length <= 1) return d
+            const tabs = d.tabs.filter((t) => t.id !== tabId)
+            return {
+              ...d,
+              tabs,
+              activeTabId: d.activeTabId === tabId ? tabs[0].id : d.activeTabId,
+            }
+          }),
+        })),
+      renameDocTab: (tabId, name) =>
+        set((s) => ({
+          documents: patchActiveDoc(s, (d) => ({
+            ...d,
+            tabs: d.tabs.map((t) => (t.id === tabId ? { ...t, name: name || t.name } : t)),
+          })),
+        })),
+      setActiveDocTab: (tabId) =>
+        set((s) => ({
+          documents: patchActiveDoc(s, (d) =>
+            d.tabs.some((t) => t.id === tabId) ? { ...d, activeTabId: tabId } : d
+          ),
+        })),
+      getActiveTab: () => {
+        const s = get()
+        const doc = s.documents.find((d) => d.id === s.activeDocumentId) ?? s.documents[0]
+        if (!doc) return null
+        return doc.tabs.find((t) => t.id === doc.activeTabId) ?? doc.tabs[0] ?? null
+      },
       setWritingPrompt: (prompt) => set({ writingPrompt: prompt }),
       setHighlightedText: (text) => set({ highlightedText: text }),
       setStyleRules: (rules) => set({ styleRules: rules }),
-      resetStyleRules: () => set({ styleRules: DEFAULT_STYLE_RULES }),
+      resetStyleRules: () =>
+        set({
+          styleRules: DEFAULT_STYLE_RULES.map((r) => ({ ...r, x: undefined, y: undefined })),
+          styleConnections: [],
+          lastStyleActivation: null,
+        }),
+
+      reinforceStyleRules: (ruleIds) =>
+        set((s) => {
+          const valid = ruleIds.filter((id) => s.styleRules.some((r) => r.id === id))
+          if (valid.length === 0) return s
+
+          const spill = spreadActivation(s.styleRules, s.styleConnections, valid)
+          const gains = new Map<string, number>()
+          for (const id of valid) gains.set(id, DIRECT_GAIN)
+          for (const sp of spill) gains.set(sp.id, (gains.get(sp.id) ?? 0) + sp.amount)
+
+          const now = Date.now()
+          const styleRules = s.styleRules.map((r) => {
+            const gain = gains.get(r.id)
+            if (!gain) return r
+            return {
+              ...r,
+              weight: r.weight + gain,
+              useCount: valid.includes(r.id) ? r.useCount + 1 : r.useCount,
+              lastActivatedAt: now,
+            }
+          })
+
+          // Fire together, wire together: every directly co-reinforced pair.
+          const pairs: [string, string][] = []
+          for (let i = 0; i < valid.length; i++)
+            for (let j = i + 1; j < valid.length; j++) pairs.push([valid[i], valid[j]])
+
+          return {
+            styleRules,
+            styleConnections: pairs.length
+              ? bumpHebbian(s.styleConnections, pairs)
+              : s.styleConnections,
+            lastStyleActivation: {
+              directIds: valid,
+              spill: spill.map((sp) => ({ from: sp.from, id: sp.id, amount: sp.amount })),
+              newRuleIds: [],
+              at: now,
+            },
+          }
+        }),
+
+      addStyleRule: ({ label, instruction, relatedRuleIds = [], source = 'ai' }) => {
+        const id = nanoid()
+        set((s) => {
+          const now = Date.now()
+          const newRule: StyleRule = {
+            id,
+            label,
+            instruction,
+            enabled: true,
+            weight: 1 + DIRECT_GAIN, // born from feedback, so it starts reinforced
+            useCount: 1,
+            lastActivatedAt: now,
+            createdAt: now,
+            source,
+          }
+          // Wire the newborn neuron: explicit relations plus organic similarity.
+          const related = new Set(
+            relatedRuleIds.filter((rid) => s.styleRules.some((r) => r.id === rid))
+          )
+          for (const r of s.styleRules) {
+            if (ruleSimilarity(newRule, r) >= 0.18) related.add(r.id)
+          }
+          const pairs: [string, string][] = [...related].map((rid) => [id, rid])
+
+          return {
+            styleRules: [...s.styleRules, newRule],
+            styleConnections: pairs.length
+              ? bumpHebbian(s.styleConnections, pairs)
+              : s.styleConnections,
+            lastStyleActivation: {
+              directIds: [id],
+              spill: [],
+              newRuleIds: [id],
+              at: now,
+            },
+          }
+        })
+        return id
+      },
+
+      editStyleRule: (id, patch) =>
+        set((s) => ({
+          styleRules: s.styleRules.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+        })),
+
+      deleteStyleRule: (id) =>
+        set((s) => ({
+          styleRules: s.styleRules.filter((r) => r.id !== id),
+          styleConnections: s.styleConnections.filter((c) => c.a !== id && c.b !== id),
+        })),
+
+      setStyleRulePosition: (id, x, y) =>
+        set((s) => ({
+          styleRules: s.styleRules.map((r) => (r.id === id ? { ...r, x, y } : r)),
+        })),
+
+      clearStyleActivation: () => set({ lastStyleActivation: null }),
 
       setRubric: (rubric) => set({ rubric }),
       setGradeResult: (result) => set({ gradeResult: result }),
@@ -325,39 +719,37 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
       getFullContext: () => {
         const s = get()
         const parts: string[] = []
+        const ctx = s.getActiveDocumentContext()
+        const doc = s.getActiveDocument()
 
-        if (s.pdfs.length > 0) {
-          parts.push('=== CONTEXT DOCUMENTS ===')
-          s.pdfs.forEach((pdf) => {
+        if (doc) {
+          parts.push(`=== ACTIVE DOCUMENT: ${doc.title} ===`)
+        }
+
+        if (ctx.pdfs.length > 0) {
+          parts.push('=== CONTEXT PDFs ===')
+          ctx.pdfs.forEach((pdf) => {
             parts.push(`[${pdf.name}]`)
             if (pdf.summary) parts.push(`Summary: ${pdf.summary}`)
             parts.push(pdf.text.slice(0, 3000))
           })
         }
 
-        if (s.images.length > 0) {
+        if (ctx.images.length > 0) {
           parts.push('=== REFERENCE IMAGES ===')
-          s.images.forEach((img) => {
-            parts.push(`[${img.name}]: ${img.description || 'No description'}`)
+          ctx.images.forEach((img) => {
+            parts.push(`[${img.name}]: ${img.description || 'Visual reference image attached to this document'}`)
           })
         }
 
-        if (s.sessions.length > 0) {
-          parts.push('=== STREAM OF CONSCIOUSNESS ===')
-          s.sessions.forEach((sess) => {
-            parts.push(`Transcript: ${sess.transcript}`)
-            if (sess.questions.length > 0) {
-              parts.push('Generated Questions: ' + sess.questions.join(' | '))
-            }
-          })
-        }
+        const linkedAdventures = ctx.linkedAdventureIds
+          .map((id) => s.adventures.find((a) => a.id === id))
+          .filter((a): a is Adventure => a != null)
+          .filter((a) => a.nodes.some((n) => n.data.response) || a.takeaways.length > 0)
 
-        const adventuresWithContent = s.adventures.filter(
-          (a) => a.nodes.some((n) => n.data.response) || a.takeaways.length > 0
-        )
-        if (adventuresWithContent.length > 0) {
-          parts.push('=== EXPLORATION ADVENTURES ===')
-          adventuresWithContent.forEach((adventure) => {
+        if (linkedAdventures.length > 0) {
+          parts.push('=== LINKED EXPLORATION ADVENTURES ===')
+          linkedAdventures.forEach((adventure) => {
             parts.push(`--- ${adventure.name} ---`)
             adventure.nodes.forEach((node) => {
               if (node.data.response) {
@@ -377,9 +769,75 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
     }),
     {
       name: 'scribe-storage',
-      version: 2,
+      version: 6,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>
+        if (version < 6) {
+          const legacyPdfs = (state.pdfs as PDFDocument[]) ?? []
+          const legacyImages = (state.images as ImageDocument[]) ?? []
+          const legacySessions = (state.sessions as TranscriptSession[]) ?? []
+          const activeId = state.activeDocumentId as string | undefined
+
+          if (Array.isArray(state.documents)) {
+            state.documents = (state.documents as Record<string, unknown>[]).map((d, index) => {
+              const docId = d.id as string
+              const isTarget = activeId ? docId === activeId : index === 0
+              const existing = d.context as DocumentContext | undefined
+              const context: DocumentContext = existing ?? emptyDocumentContext()
+
+              if (!existing && isTarget) {
+                context.pdfs = legacyPdfs
+                context.images = legacyImages
+                if (legacySessions.length > 0) {
+                  context.conversations = legacySessions.map((sess) => ({
+                    id: nanoid(),
+                    name: `Stream · ${new Date(sess.createdAt).toLocaleDateString()}`,
+                    transcript: sess.transcript,
+                    questions: sess.questions.length > 0 ? [...sess.questions] : undefined,
+                    source: 'stream' as const,
+                    sourceSessionId: sess.id,
+                    uploadedAt: sess.createdAt,
+                  }))
+                }
+              }
+
+              return { ...d, context }
+            })
+          }
+
+          delete state.pdfs
+          delete state.images
+        }
+        if (version < 5 && Array.isArray(state.documents)) {
+          // Flat documents → documents with Google-Docs-style tabs.
+          state.documents = (state.documents as Record<string, unknown>[]).map((d) => {
+            if (Array.isArray(d.tabs) && d.tabs.length > 0) return d
+            const tab: DocTab = {
+              id: nanoid(),
+              name: 'Tab 1',
+              content: typeof d.content === 'string' ? d.content : '',
+            }
+            const { content: _content, ...rest } = d
+            return { ...rest, tabs: [tab], activeTabId: tab.id }
+          })
+        }
+        if (version < 4) {
+          // Single document → multi-document workspace.
+          const legacyContent = typeof state.documentContent === 'string' ? state.documentContent : ''
+          const legacyTitle = typeof state.documentTitle === 'string' ? state.documentTitle : 'Untitled'
+          const doc = makeDocument(legacyTitle, legacyContent)
+          state.documents = [doc]
+          state.activeDocumentId = doc.id
+          delete state.documentContent
+          delete state.documentTitle
+        }
+        if (version < 3) {
+          const legacyRules = (state.styleRules as (Partial<StyleRule> & { id: string })[]) ?? []
+          state.styleRules = legacyRules.length
+            ? legacyRules.map(migrateStyleRule)
+            : DEFAULT_STYLE_RULES
+          state.styleConnections = []
+        }
         if (version < 2) {
           const legacyNodes = (state.explorationNodes as Adventure['nodes']) ?? []
           const legacyEdges = (state.explorationEdges as Adventure['edges']) ?? []
@@ -405,12 +863,21 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
       },
       partialize: (s) => ({
         apiKey: s.apiKey,
-        pdfs: s.pdfs.map((p) => ({ ...p, text: p.text.slice(0, 5000) })),
-        images: s.images.map((i) => ({ ...i, dataUrl: '' })),
         sessions: s.sessions,
-        documentContent: s.documentContent,
-        documentTitle: s.documentTitle,
+        documents: s.documents.map((d) => ({
+          ...d,
+          context: {
+            ...d.context,
+            pdfs: d.context.pdfs.map((p) => ({ ...p, text: p.text.slice(0, 8000) })),
+            images: d.context.images.map((i) => ({
+              ...i,
+              dataUrl: i.dataUrl.length > 600000 ? '' : i.dataUrl,
+            })),
+          },
+        })),
+        activeDocumentId: s.activeDocumentId,
         styleRules: s.styleRules,
+        styleConnections: s.styleConnections,
         rubric: s.rubric,
         adventures: s.adventures,
         activeAdventureId: s.activeAdventureId,
@@ -418,3 +885,8 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
     }
   )
 )
+
+// Dev-only handle for inspecting/driving the store from the console.
+if (import.meta.env.DEV) {
+  ;(window as unknown as Record<string, unknown>).__odinStore = useStore
+}

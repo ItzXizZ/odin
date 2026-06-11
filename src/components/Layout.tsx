@@ -1,19 +1,20 @@
 import { useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Settings, BookOpen, Mic, GitBranch, PenTool, Star } from 'lucide-react'
+import { Settings, BookOpen, FileText, GitBranch, PenTool, Share2 } from 'lucide-react'
 import { useStore, type AppTab } from '../store/useStore'
 import ContextHouse from './ContextHouse'
-import StreamOfConsciousness from './StreamOfConsciousness'
+import DocumentsMode from './DocumentsMode'
 import ExplorationMode from './ExplorationMode'
 import WriteMode from './WriteMode'
-import GradeMode from './GradeMode'
+import StylismMode from './WriteMode/StylismMode'
+import logo from './logo.png'
 
 const TABS: { id: AppTab; label: string; icon: React.ReactNode }[] = [
   { id: 'context',     label: 'Context House', icon: <BookOpen size={14} /> },
-  { id: 'stream',      label: 'Stream',        icon: <Mic size={14} /> },
+  { id: 'documents',   label: 'Documents',     icon: <FileText size={14} /> },
   { id: 'exploration', label: 'Exploration',   icon: <GitBranch size={14} /> },
   { id: 'write',       label: 'Write',         icon: <PenTool size={14} /> },
-  { id: 'grade',       label: 'Grade',         icon: <Star size={14} /> },
+  { id: 'stylism',     label: 'Stylism',       icon: <Share2 size={14} /> },
 ]
 
 export default function Layout() {
@@ -41,17 +42,10 @@ export default function Layout() {
         style={{ background: 'transparent' }}
       >
         {/* Logo */}
-        <span
-          className="text-xl font-bold select-none"
-          style={{
-            fontFamily: "'Inter', sans-serif",
-            letterSpacing: '-0.04em',
-            color: 'rgba(40,40,40,1)',
-            textShadow: '0 0.05em 0.1em rgba(0,0,0,0.12)',
-          }}
-        >
-          Odin
-        </span>
+        <div className="app-logo" aria-label="Odin">
+          <img src={logo} alt="" className="app-logo-img" />
+          <span className="app-logo-text">Odin</span>
+        </div>
 
         {/* Glass pill nav */}
         <div className="nav-wrap" style={{ position: 'relative' }}>
@@ -106,9 +100,9 @@ export default function Layout() {
               className="h-full absolute inset-0"
             >
               {activeTab === 'context'     && <ContextHouse />}
-              {activeTab === 'stream'      && <StreamOfConsciousness />}
+              {activeTab === 'documents'   && <DocumentsMode />}
               {activeTab === 'exploration' && <ExplorationMode />}
-              {activeTab === 'grade'       && <GradeMode />}
+              {activeTab === 'stylism'     && <StylismMode />}
             </motion.div>
           </AnimatePresence>
         )}

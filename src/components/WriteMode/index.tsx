@@ -7,19 +7,33 @@ import Highlight from '@tiptap/extension-highlight'
 import TextAlign from '@tiptap/extension-text-align'
 import {
   Bold, Italic, UnderlineIcon, AlignLeft, AlignCenter, AlignRight,
-  Check, X, ChevronRight, ChevronDown, BookOpen, Mic, GitBranch,
-  Star, Loader2, Lightbulb, Undo2, Redo2, Send, Save, Wand2, Crosshair, Sparkles,
+  Check, X, Loader2, Undo2, Redo2, Crosshair,
+  Plus, PanelRightClose, PanelRightOpen,
 } from 'lucide-react'
 import { diffWords } from 'diff'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useStore } from '../../store/useStore'
 import { streamChat } from '../../lib/claude'
 import { compileStyleGuide, buildEditSystemPrompt, parseEdits, applyEdits } from '../../lib/style'
-import DiffReview, { type DiffChange } from './DiffReview'
+import {
+  runStyleAgentTurn,
+  runConflictResolutionTurn,
+  type StyleAgentAction,
+  type StyleAgentResult,
+} from '../../lib/styleAgent'
+import type { DiffChange } from './DiffReview'
 import { Insertion, Deletion, DiffReview as DiffReviewExt, resolveRange, docHasDiff } from './diffExtension'
+import {
+  normalizeAiResponse,
+  applyRichFormattingToEditor,
+  looksLikeMarkdown,
+  markdownishToHtml,
+} from '../../lib/aiText'
 import { diffToHtml } from './diffHtml'
 import TunnelVision from './TunnelVision'
-import StylismMode from './StylismMode'
+
+/** Highlight color marking the passage currently attached to the assistant. */
+const REF_HIGHLIGHT_COLOR = '#ffe690'
 
 interface AISuggestion {
   id: string
@@ -32,6 +46,8 @@ interface ReviewState {
   suggestionId: string
   instruction: string
   diff: DiffChange[]
+  /** Every suggestion stacked into this review (Cursor-style follow-up edits). */
+  stackedIds: string[]
 }
 
 interface ChatEntry {
@@ -39,6 +55,8 @@ interface ChatEntry {
   role: 'user' | 'assistant'
   content: string
   suggestionId?: string
+  /** Messages from the Stylism network curator (conflicts, confirmations). */
+  kind?: 'style'
 }
 
 interface SelectionMenu {
@@ -61,15 +79,58 @@ function htmlHasText(html: string): boolean {
   return html.replace(/<[^>]+>/g, '').trim().length > 0
 }
 
+/**
+ * Read the document text while a diff review is active.
+ * 'original' ignores pending insertions; 'proposed' ignores pending deletions —
+ * so follow-up AI edits can stack on the in-flight result, Cursor-style.
+ */
+function reviewTextFromDoc(ed: Editor, keep: 'original' | 'proposed'): string {
+  const parts: string[] = []
+  ed.state.doc.forEach((block) => {
+    let text = ''
+    block.descendants((node) => {
+      if (!node.isText) return
+      const ins = node.marks.some((m) => m.type.name === 'insertion')
+      const del = node.marks.some((m) => m.type.name === 'deletion')
+      if (keep === 'original' ? !ins : !del) text += node.text ?? ''
+    })
+    parts.push(text)
+  })
+  return parts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/** Remove every attachment-reference highlight mark from the document. */
+function clearReferenceHighlightIn(ed: Editor) {
+  const { state } = ed
+  const type = state.schema.marks.highlight
+  if (!type) return
+  let tr = state.tr
+  let found = false
+  state.doc.descendants((node, pos) => {
+    if (!node.isText) return
+    for (const mark of node.marks) {
+      if (mark.type === type && mark.attrs.color === REF_HIGHLIGHT_COLOR) {
+        tr = tr.removeMark(pos, pos + node.nodeSize, type)
+        found = true
+      }
+    }
+  })
+  if (found) ed.view.dispatch(tr)
+}
+
 export default function WriteMode() {
   const {
-    documentTitle, apiKey, getFullContext,
-    setDocumentContent, setDocumentTitle, setActiveTab,
-    pdfs, sessions, adventures,
-    styleRules, setStyleRules, resetStyleRules,
+    documents, activeDocumentId, apiKey, getFullContext,
+    setDocumentContent, setDocumentTitle,
+    addDocTab, deleteDocTab, renameDocTab, setActiveDocTab,
+    styleRules,
+    reinforceStyleRules, addStyleRule, editStyleRule, deleteStyleRule,
   } = useStore()
 
-  const takeawayCount = adventures.reduce((sum, a) => sum + a.takeaways.length, 0)
+  const activeDoc = documents.find((d) => d.id === activeDocumentId) ?? documents[0]
+  const documentTitle = activeDoc?.title ?? 'Untitled'
+  const docTabs = activeDoc?.tabs ?? []
+  const activeTabId = activeDoc?.activeTabId ?? null
 
   const [hydrated, setHydrated] = useState(() => useStore.persist.hasHydrated())
   const [aiPrompt, setAiPrompt] = useState('')
@@ -77,20 +138,25 @@ export default function WriteMode() {
   const [suggestions, setSuggestions] = useState<AISuggestion[]>([])
   const [review, setReview] = useState<ReviewState | null>(null)
   const [chat, setChat] = useState<ChatEntry[]>([])
-  const [contextExpanded, setContextExpanded] = useState<string | null>(null)
   const [wordCount, setWordCount] = useState(0)
   const [attachedSelection, setAttachedSelection] = useState('')
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenu | null>(null)
   const [tunnel, setTunnel] = useState<TunnelState | null>(null)
-  const [stylismOpen, setStylismOpen] = useState(false)
-  const [savedFlash, setSavedFlash] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [assistantOpen, setAssistantOpen] = useState(true)
+  const [renamingTab, setRenamingTab] = useState<{ id: string; value: string } | null>(null)
 
   const skipEmptySaveRef = useRef(true)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<Editor | null>(null)
   const reviewActiveRef = useRef(false)
+  const reviewStateRef = useRef<ReviewState | null>(null)
+  reviewStateRef.current = review
   const finishReviewRef = useRef<() => void>(() => {})
+  const chatStateRef = useRef<ChatEntry[]>([])
+  chatStateRef.current = chat
+  /** An unresolved Stylism rule conflict; the writer's next message resolves it. */
+  const pendingConflictRef = useRef<{ ruleId: string; question: string } | null>(null)
 
   useEffect(() => {
     if (useStore.persist.hasHydrated()) {
@@ -125,12 +191,12 @@ export default function WriteMode() {
             'Begin writing… Your ideas from Context House, Stream, and Exploration are available to Claude.',
         }),
       ],
-      content: useStore.getState().documentContent,
+      content: useStore.getState().getActiveTab()?.content ?? '',
       onUpdate: ({ editor: ed }) => {
         // Never persist the transient merged-diff document while reviewing.
         if (reviewActiveRef.current) return
         if (skipEmptySaveRef.current && ed.isEmpty) {
-          const stored = useStore.getState().documentContent
+          const stored = useStore.getState().getActiveTab()?.content ?? ''
           if (htmlHasText(stored)) return
         }
         skipEmptySaveRef.current = false
@@ -147,14 +213,36 @@ export default function WriteMode() {
 
   useEffect(() => {
     if (!editor || !hydrated) return
-    const stored = useStore.getState().documentContent
+    const stored = useStore.getState().getActiveTab()?.content ?? ''
     if (stored && editor.isEmpty) {
       skipEmptySaveRef.current = true
       editor.commands.setContent(stored, false)
       skipEmptySaveRef.current = false
     }
+    clearReferenceHighlightIn(editor) // drop any stale attachment marks from a prior session
     setWordCount(editor.getText().split(/\s+/).filter(Boolean).length)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, hydrated])
+
+  /* ── Load the newly active document/tab into the editor when it changes ── */
+  const loadedKeyRef = useRef<string | null>(null)
+  const activeKey = `${activeDocumentId}:${activeTabId}`
+  useEffect(() => {
+    if (!editor || !hydrated) return
+    if (loadedKeyRef.current === null) {
+      loadedKeyRef.current = activeKey
+      return
+    }
+    if (loadedKeyRef.current === activeKey) return
+    loadedKeyRef.current = activeKey
+    const tab = useStore.getState().getActiveTab()
+    skipEmptySaveRef.current = true
+    editor.commands.setContent(tab?.content ?? '', false)
+    skipEmptySaveRef.current = false
+    setWordCount(editor.getText().split(/\s+/).filter(Boolean).length)
+    setAttachedSelection('')
+    setSelectionMenu(null)
+  }, [activeKey, editor, hydrated])
 
   useEffect(() => {
     return () => {
@@ -202,12 +290,42 @@ export default function WriteMode() {
     }
   }, [editor])
 
+  /* ── Attachment reference highlight ──
+     When a passage is attached to the assistant, it stays visibly highlighted
+     in the editor so the writer always knows what they're referencing. */
+  const attachSelection = useCallback((text: string, from?: number, to?: number) => {
+    const ed = editorRef.current
+    if (ed && !reviewActiveRef.current) {
+      clearReferenceHighlightIn(ed)
+      if (from != null && to != null && to > from) {
+        ed.chain()
+          .setTextSelection({ from, to })
+          .setHighlight({ color: REF_HIGHLIGHT_COLOR })
+          .setTextSelection(to)
+          .run()
+      }
+    }
+    setAttachedSelection(text)
+  }, [])
+
+  const detachSelection = useCallback(() => {
+    const ed = editorRef.current
+    if (ed && !reviewActiveRef.current) clearReferenceHighlightIn(ed)
+    setAttachedSelection('')
+  }, [])
+
   /* ── Finalize a review once all hunks are resolved ── */
   const finishReview = useCallback(() => {
     const ed = editorRef.current
     if (!ed) return
     reviewActiveRef.current = false
     ed.setEditable(true)
+    clearReferenceHighlightIn(ed)
+    applyRichFormattingToEditor(ed, () => {
+      skipEmptySaveRef.current = true
+    }, () => {
+      skipEmptySaveRef.current = false
+    })
     const html = ed.getHTML()
     setDocumentContent(html)
     setWordCount(ed.getText().split(/\s+/).filter(Boolean).length)
@@ -226,6 +344,10 @@ export default function WriteMode() {
       const diff = diffWords(currentText, newText) as DiffChange[]
       const html = diffToHtml(diff)
       const id = (Date.now() + 1).toString()
+      // Follow-up edits during an open review stack onto it, Cursor-style.
+      const stackedIds = reviewActiveRef.current && reviewStateRef.current
+        ? [...reviewStateRef.current.stackedIds, id]
+        : [id]
 
       reviewActiveRef.current = true
       skipEmptySaveRef.current = true
@@ -239,7 +361,7 @@ export default function WriteMode() {
         { id, instruction, diff, accepted: null },
         ...prev.slice(0, 9),
       ])
-      setReview({ suggestionId: id, instruction, diff })
+      setReview({ suggestionId: id, instruction, diff, stackedIds })
       setChat((prev) => [
         ...prev,
         {
@@ -247,7 +369,7 @@ export default function WriteMode() {
           role: 'assistant',
           content: `Proposed ${diff.filter((d) => d.added || d.removed).length} change${
             diff.filter((d) => d.added || d.removed).length === 1 ? '' : 's'
-          }. Review them inline, or here.`,
+          }. Review them inline.`,
           suggestionId: id,
         },
       ])
@@ -260,7 +382,7 @@ export default function WriteMode() {
     if (!ed || !review) return
     resolveRange(ed.view, 0, ed.state.doc.content.size, 'accept')
     setSuggestions((prev) =>
-      prev.map((s) => (s.id === review.suggestionId ? { ...s, accepted: true } : s))
+      prev.map((s) => (review.stackedIds.includes(s.id) ? { ...s, accepted: true } : s))
     )
     finishReview()
   }, [review, finishReview])
@@ -270,13 +392,125 @@ export default function WriteMode() {
     if (!ed || !review) return
     resolveRange(ed.view, 0, ed.state.doc.content.size, 'reject')
     setSuggestions((prev) =>
-      prev.map((s) => (s.id === review.suggestionId ? { ...s, accepted: false } : s))
+      prev.map((s) => (review.stackedIds.includes(s.id) ? { ...s, accepted: false } : s))
     )
     finishReview()
   }, [review, finishReview])
 
+  /* ── Stylism network maintenance ── */
+
+  const postStyleMessage = useCallback((content: string) => {
+    setChat((prev) => [
+      ...prev,
+      { id: `style-${Date.now()}`, role: 'assistant', content, kind: 'style' },
+    ])
+  }, [])
+
+  const applyStyleActions = useCallback(
+    (actions: StyleAgentAction[]): string[] => {
+      const rules = useStore.getState().styleRules
+      const labelOf = (id: string) => rules.find((r) => r.id === id)?.label ?? 'a rule'
+      const summary: string[] = []
+
+      // Reinforce before create so the birth animation wins the final frame.
+      for (const a of actions) {
+        if (a.type !== 'reinforce' || a.ruleIds.length === 0) continue
+        reinforceStyleRules(a.ruleIds)
+        summary.push(`reinforced ${a.ruleIds.map((id) => `“${labelOf(id)}”`).join(', ')}`)
+      }
+      for (const a of actions) {
+        switch (a.type) {
+          case 'create':
+            if (a.instruction.trim()) {
+              addStyleRule({
+                label: a.label,
+                instruction: a.instruction,
+                relatedRuleIds: a.relatedRuleIds,
+                source: 'ai',
+              })
+              summary.push(`new rule “${a.label}”`)
+            }
+            break
+          case 'edit':
+            if (a.ruleId && a.instruction) {
+              summary.push(`updated “${labelOf(a.ruleId)}”`)
+              editStyleRule(a.ruleId, {
+                instruction: a.instruction,
+                ...(a.label ? { label: a.label } : {}),
+              })
+            }
+            break
+          case 'delete':
+            if (a.ruleId) {
+              summary.push(`removed “${labelOf(a.ruleId)}”`)
+              deleteStyleRule(a.ruleId)
+            }
+            break
+        }
+      }
+      return summary
+    },
+    [reinforceStyleRules, addStyleRule, editStyleRule, deleteStyleRule]
+  )
+
+  /**
+   * After each exchange, the same Claude decides (via tools) whether the
+   * writer's message was stylistic feedback and updates the network. Runs in
+   * the background; failures are silent so writing flow is never blocked.
+   */
+  const maintainStyleNetwork = useCallback(
+    async (instruction: string) => {
+      if (!apiKey) return
+      try {
+        const rules = useStore.getState().styleRules
+        const conflict = pendingConflictRef.current
+        let result: StyleAgentResult
+
+        if (conflict) {
+          pendingConflictRef.current = null
+          result = await runConflictResolutionTurn({
+            apiKey,
+            rules,
+            conflictRuleId: conflict.ruleId,
+            conflictQuestion: conflict.question,
+            reply: instruction,
+          })
+        } else {
+          result = await runStyleAgentTurn({
+            apiKey,
+            rules,
+            instruction,
+            recentChat: chatStateRef.current
+              .filter((m) => m.kind !== 'style')
+              .map((m) => ({ role: m.role, content: m.content })),
+          })
+        }
+
+        const newConflict = result.actions.find((a) => a.type === 'conflict')
+        const summary = applyStyleActions(result.actions)
+
+        if (newConflict && newConflict.type === 'conflict') {
+          const question =
+            result.text ||
+            `That counters your existing rule “${
+              rules.find((r) => r.id === newConflict.ruleId)?.label ?? newConflict.ruleId
+            }”. Should I edit it, make it more specific, or delete it?`
+          pendingConflictRef.current = { ruleId: newConflict.ruleId, question }
+          postStyleMessage(question)
+        } else if (result.text) {
+          postStyleMessage(result.text)
+        } else if (summary.length > 0) {
+          postStyleMessage(`Style network updated: ${summary.join(' · ')}.`)
+        }
+      } catch {
+        // Network upkeep must never interrupt the writing flow.
+      }
+    },
+    [apiKey, applyStyleActions, postStyleMessage]
+  )
+
   const handleAIAssist = useCallback(async () => {
-    if (!aiPrompt.trim() || !apiKey || !editor || reviewActiveRef.current) return
+    if (!aiPrompt.trim() || !apiKey || !editor) return
 
     const instruction = aiPrompt.trim()
     const userEntryId = Date.now().toString()
@@ -284,14 +518,20 @@ export default function WriteMode() {
     setAiPrompt('')
     setIsStreaming(true)
 
-    const currentText = editor.getText({ blockSeparator: '\n\n' })
+    // While a review is open, follow-up edits stack: the AI edits the proposed
+    // text, but the next diff is still shown against the original document.
+    const stacking = reviewActiveRef.current
+    const currentText = stacking
+      ? reviewTextFromDoc(editor, 'proposed')
+      : editor.getText({ blockSeparator: '\n\n' })
+    const baseText = stacking ? reviewTextFromDoc(editor, 'original') : currentText
     const context = getFullContext()
     const styleGuide = compileStyleGuide(styleRules)
     const passage = attachedSelection
     const isEmptyDoc = currentText.trim().length === 0
 
     const system = isEmptyDoc
-      ? `You are an expert writing assistant. Write the content the writer asks for as clean prose (plain text, paragraphs separated by blank lines). Return ONLY the prose, no commentary, no JSON, no markdown fences.
+      ? `You are an expert writing assistant. Write the content the writer asks for as clean prose (paragraphs separated by blank lines). Return ONLY the prose — no commentary, no JSON, no code fences, and no Markdown (# headings, **bold**, bullet lists, or similar symbols).
 
 ${styleGuide ? styleGuide + '\n\n' : ''}${context ? `=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : ''}`
       : buildEditSystemPrompt({ context, styleGuide, scope: 'document' })
@@ -319,6 +559,7 @@ INSTRUCTION: ${instruction}`
       },
       () => {
         setIsStreaming(false)
+        raw = normalizeAiResponse(raw)
         if (isEmptyDoc) {
           const generated = raw.trim()
           if (!generated) {
@@ -328,7 +569,7 @@ INSTRUCTION: ${instruction}`
             ])
             return
           }
-          enterReview(currentText, generated, instruction)
+          enterReview(baseText, generated, instruction)
           return
         }
         const edits = parseEdits(raw)
@@ -353,7 +594,7 @@ INSTRUCTION: ${instruction}`
           ])
           return
         }
-        enterReview(currentText, newText, instruction)
+        enterReview(baseText, newText, instruction)
       },
       (errMessage) => {
         setIsStreaming(false)
@@ -363,7 +604,11 @@ INSTRUCTION: ${instruction}`
         ])
       }
     )
-  }, [aiPrompt, apiKey, editor, getFullContext, styleRules, attachedSelection, enterReview])
+
+    // Background turn: let Claude decide if this was stylistic feedback and
+    // update the Stylism network (reinforce / create / flag conflicts).
+    void maintainStyleNetwork(instruction)
+  }, [aiPrompt, apiKey, editor, getFullContext, styleRules, attachedSelection, enterReview, maintainStyleNetwork])
 
   /* ── Tunnel vision ── */
   const openTunnel = useCallback(
@@ -383,7 +628,9 @@ INSTRUCTION: ${instruction}`
     (newText: string) => {
       const ed = editorRef.current
       if (!ed || !tunnel) return
-      ed.chain().focus().insertContentAt({ from: tunnel.from, to: tunnel.to }, newText).run()
+      const cleaned = normalizeAiResponse(newText)
+      const content = looksLikeMarkdown(cleaned) ? markdownishToHtml(cleaned) : cleaned
+      ed.chain().focus().insertContentAt({ from: tunnel.from, to: tunnel.to }, content).run()
       setDocumentContent(ed.getHTML())
       setWordCount(ed.getText().split(/\s+/).filter(Boolean).length)
       setTunnel(null)
@@ -391,26 +638,19 @@ INSTRUCTION: ${instruction}`
     [tunnel, setDocumentContent]
   )
 
-  /* ── Save ── */
-  const handleSave = useCallback(() => {
-    const ed = editorRef.current
-    if (ed && !reviewActiveRef.current) setDocumentContent(ed.getHTML())
-    setSavedFlash(true)
-    window.setTimeout(() => setSavedFlash(false), 1400)
-  }, [setDocumentContent])
-
   /* ── Global keyboard ── */
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey
       if (mod && e.key.toLowerCase() === 's') {
+        // Saving is live; just swallow the browser dialog.
         e.preventDefault()
-        handleSave()
+        const ed = editorRef.current
+        if (ed && !reviewActiveRef.current) setDocumentContent(ed.getHTML())
         return
       }
       if (e.key === 'Escape') {
         if (tunnel) setTunnel(null)
-        else if (stylismOpen) setStylismOpen(false)
         else if (reviewActiveRef.current) rejectAll()
         return
       }
@@ -421,7 +661,7 @@ INSTRUCTION: ${instruction}`
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [handleSave, tunnel, stylismOpen, acceptAll, rejectAll])
+  }, [setDocumentContent, tunnel, acceptAll, rejectAll])
 
   /* ── Drag selection into prompt ── */
   const handlePromptDrop = (e: React.DragEvent) => {
@@ -432,17 +672,40 @@ INSTRUCTION: ${instruction}`
       window.getSelection()?.toString() ||
       ''
     const trimmed = text.trim()
-    if (trimmed) setAttachedSelection(trimmed)
+    if (!trimmed) return
+    // If the drag came from the editor, its selection still marks the range.
+    const sel = editorRef.current?.state.selection
+    if (sel && !sel.empty) attachSelection(trimmed, sel.from, sel.to)
+    else attachSelection(trimmed)
   }
 
-  const contextSections = [
-    { id: 'pdfs', label: 'Documents', count: pdfs.length, icon: <BookOpen size={12} /> },
-    { id: 'stream', label: 'Stream Sessions', count: sessions.length, icon: <Mic size={12} /> },
-    { id: 'exploration', label: 'Adventures', count: adventures.length, icon: <GitBranch size={12} /> },
-    { id: 'takeaways', label: 'Takeaways', count: takeawayCount, icon: <Lightbulb size={12} /> },
-  ]
+  /* ── Document tabs (Google-Docs-style sub-documents) ── */
+  const persistEditorContent = () => {
+    const ed = editorRef.current
+    if (ed && !reviewActiveRef.current) {
+      clearReferenceHighlightIn(ed)
+      setDocumentContent(ed.getHTML())
+    }
+  }
 
-  const changeCount = review ? review.diff.filter((d) => d.added || d.removed).length : 0
+  const switchTab = (id: string) => {
+    if (id === activeTabId || reviewActiveRef.current) return
+    persistEditorContent()
+    setActiveDocTab(id)
+  }
+
+  const handleNewTab = () => {
+    if (reviewActiveRef.current) return
+    persistEditorContent()
+    addDocTab()
+  }
+
+  const commitTabRename = () => {
+    if (renamingTab) {
+      renameDocTab(renamingTab.id, renamingTab.value.trim())
+      setRenamingTab(null)
+    }
+  }
 
   if (!hydrated) {
     return (
@@ -453,14 +716,14 @@ INSTRUCTION: ${instruction}`
   }
 
   return (
-    <div className="h-full flex overflow-hidden">
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0 relative">
+    <div className="write-mode h-full relative overflow-hidden">
+      <div className="h-full flex flex-col overflow-hidden">
         <div className="flex-shrink-0 flex items-center justify-between border-b border-black/8 bg-white/30 backdrop-blur px-4 py-2">
           <div className="flex items-center gap-1 min-w-0">
             <input
               value={documentTitle}
               onChange={(e) => setDocumentTitle(e.target.value)}
-              className="bg-transparent text-base font-semibold text-black/75 outline-none hover:text-black w-40 placeholder-black/30"
+              className="write-doc-title"
               placeholder="Untitled"
             />
             <span className="text-black/15 mx-2">|</span>
@@ -505,60 +768,17 @@ INSTRUCTION: ${instruction}`
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-2.5 flex-shrink-0">
             <span className="text-xs text-black/35">{wordCount} words</span>
             <button
-              onClick={() => setStylismOpen(true)}
-              className="btn-ghost flex items-center gap-1.5 text-xs"
-              title="Tune the AI's writing style"
+              onClick={() => setAssistantOpen((v) => !v)}
+              className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70"
+              title={assistantOpen ? 'Hide assistant' : 'Show assistant'}
             >
-              <Wand2 size={12} />
-              Stylism
-            </button>
-            <button
-              onClick={handleSave}
-              className={`btn-ghost flex items-center gap-1.5 text-xs ${savedFlash ? 'text-green-700' : ''}`}
-              title="Save (Ctrl+S)"
-            >
-              {savedFlash ? <Check size={12} /> : <Save size={12} />}
-              {savedFlash ? 'Saved' : 'Save'}
-            </button>
-            <button onClick={() => setActiveTab('grade')} className="btn-ghost flex items-center gap-1.5 text-xs">
-              <Star size={12} />
-              Grade
+              {assistantOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
             </button>
           </div>
         </div>
-
-        {/* Inline review bar */}
-        <AnimatePresence>
-          {review && (
-            <motion.div
-              initial={{ opacity: 0, y: -8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              className="flex-shrink-0 flex items-center justify-between gap-3 border-b border-black/8 bg-blue-500/[0.06] px-4 py-2"
-            >
-              <span className="text-xs text-black/55">
-                {changeCount} suggested change{changeCount === 1 ? '' : 's'} — review inline, or:
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={rejectAll}
-                  className="flex items-center gap-1.5 rounded-lg border border-black/10 bg-black/[0.03] px-3 py-1.5 text-xs font-medium text-black/55 hover:bg-black/[0.06]"
-                >
-                  <X size={13} /> Reject all <kbd>Esc</kbd>
-                </button>
-                <button
-                  onClick={acceptAll}
-                  className="flex items-center gap-1.5 rounded-lg border border-green-600/25 bg-green-600/10 px-3 py-1.5 text-xs font-medium text-green-800 hover:bg-green-600/15"
-                >
-                  <Check size={13} /> Accept all <kbd>⌘↵</kbd>
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
 
         <div className="flex-1 overflow-y-auto">
           <div className="tiptap-editor max-w-3xl mx-auto min-h-full">
@@ -592,11 +812,10 @@ INSTRUCTION: ${instruction}`
               <button
                 className="selection-toolbar-btn"
                 onClick={() => {
-                  setAttachedSelection(selectionMenu.text)
+                  attachSelection(selectionMenu.text, selectionMenu.from, selectionMenu.to)
                   setSelectionMenu(null)
                 }}
               >
-                <Sparkles size={13} />
                 Add to chat
               </button>
             </motion.div>
@@ -604,186 +823,206 @@ INSTRUCTION: ${instruction}`
         </AnimatePresence>
       </div>
 
-      <aside className="w-[340px] flex-shrink-0 border-l border-black/8 bg-white/25 backdrop-blur flex flex-col overflow-hidden">
-        <div className="flex-shrink-0 border-b border-black/8 px-4 py-3">
-          <p className="text-sm font-semibold text-black/70">Assistant</p>
-          <p className="text-[11px] text-black/40 mt-0.5">
-            Select text for Focus, or drag it into the prompt below
-          </p>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-3 space-y-3">
-          {chat.length === 0 && !isStreaming && (
-            <div className="rounded-xl border border-dashed border-black/10 p-4 text-center">
-              <p className="text-xs text-black/40 leading-relaxed">
-                Ask Claude to refine a passage. Edits are surgical and shown inline so you can
-                accept or reject each one.
-              </p>
-            </div>
-          )}
-
-          {chat.map((entry) => {
-            const suggestion = entry.suggestionId
-              ? suggestions.find((s) => s.id === entry.suggestionId)
-              : undefined
-            const isActiveReview = review?.suggestionId === entry.suggestionId
-
-            return (
-              <div key={entry.id} className="space-y-2">
-                <div className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div
-                    className={`max-w-[92%] rounded-xl px-3 py-2 text-xs leading-relaxed ${
-                      entry.role === 'user'
-                        ? 'bg-black/8 text-black/75'
-                        : 'bg-white/60 border border-black/8 text-black/70'
-                    }`}
-                  >
-                    <p className="whitespace-pre-wrap">{entry.content}</p>
-                    {entry.role === 'assistant' && suggestion?.accepted === true && (
-                      <p className="mt-1.5 flex items-center gap-1 text-[10px] text-green-700">
-                        <Check size={10} /> Applied
-                      </p>
-                    )}
-                    {entry.role === 'assistant' && suggestion?.accepted === false && (
-                      <p className="mt-1.5 flex items-center gap-1 text-[10px] text-black/40">
-                        <X size={10} /> Rejected
-                      </p>
-                    )}
-                  </div>
-                </div>
-                {isActiveReview && review && (
-                  <DiffReview
-                    instruction={review.instruction}
-                    diff={review.diff}
-                    onAccept={acceptAll}
-                    onReject={rejectAll}
-                  />
-                )}
-              </div>
-            )
-          })}
-
-          {isStreaming && (
-            <div className="flex justify-start">
-              <div className="max-w-[92%] rounded-xl border border-black/8 bg-white/60 px-3 py-2 text-xs text-black/60">
-                <div className="flex items-center gap-2 text-black/40">
-                  <Loader2 size={12} className="animate-spin" />
-                  Composing precise edits…
-                </div>
-              </div>
-            </div>
-          )}
-          <div ref={chatEndRef} />
-        </div>
-
-        <div className="flex-shrink-0 border-t border-black/8 px-3 py-2 max-h-36 overflow-y-auto">
-          <button
-            type="button"
-            onClick={() => setContextExpanded(contextExpanded ? null : 'context')}
-            className="w-full flex items-center justify-between text-left py-1"
+      {/* Floating vertical document tabs */}
+      <div className="doc-tabs-float" aria-label="Document tabs">
+        {docTabs.map((tab) => (
+          <div
+            key={tab.id}
+            className={`doc-tab ${tab.id === activeTabId ? 'active' : ''}`}
+            onClick={() => switchTab(tab.id)}
+            onDoubleClick={(e) => {
+              e.stopPropagation()
+              setRenamingTab({ id: tab.id, value: tab.name })
+            }}
           >
-            <span className="text-[11px] font-medium text-black/50">Active context</span>
-            {contextExpanded === 'context' ? (
-              <ChevronDown size={12} className="text-black/30" />
+            {renamingTab?.id === tab.id ? (
+              <input
+                autoFocus
+                className="doc-tab-rename"
+                value={renamingTab.value}
+                onChange={(e) => setRenamingTab({ id: tab.id, value: e.target.value })}
+                onBlur={commitTabRename}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitTabRename()
+                  if (e.key === 'Escape') setRenamingTab(null)
+                }}
+                onClick={(e) => e.stopPropagation()}
+              />
             ) : (
-              <ChevronRight size={12} className="text-black/30" />
+              <span className="doc-tab-name">{tab.name}</span>
             )}
-          </button>
-          <AnimatePresence initial={false}>
-            {contextExpanded === 'context' && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                className="overflow-hidden space-y-1 pb-1"
+            {docTabs.length > 1 && (
+              <button
+                className="doc-tab-close"
+                title="Delete tab"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  deleteDocTab(tab.id)
+                }}
               >
-                {contextSections.map((section) => (
-                  <div key={section.id} className="flex items-center justify-between rounded-lg bg-black/[0.03] px-2 py-1.5">
-                    <div className="flex items-center gap-1.5 text-black/55">
-                      {section.icon}
-                      <span className="text-[10px]">{section.label}</span>
-                    </div>
-                    <span className={`text-[10px] rounded-full px-1.5 py-0.5 ${section.count > 0 ? 'bg-black/8 text-black/60' : 'text-black/30'}`}>
-                      {section.count}
-                    </span>
-                  </div>
-                ))}
-                {contextSections.every((s) => s.count === 0) && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab('context')}
-                    className="text-[10px] text-black/45 hover:text-black/65 underline"
-                  >
-                    Add context in Context House
-                  </button>
-                )}
-              </motion.div>
+                <X size={10} />
+              </button>
             )}
-          </AnimatePresence>
-        </div>
-
-        <div
-          className={`flex-shrink-0 border-t border-black/8 p-3 space-y-2 relative ${dragOver ? 'prompt-dropzone-active' : ''}`}
-          onDragOver={(e) => {
-            e.preventDefault()
-            setDragOver(true)
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={handlePromptDrop}
-        >
-          <AnimatePresence>
-            {attachedSelection && (
-              <motion.div
-                initial={{ opacity: 0, y: 8, scale: 0.97 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 8, scale: 0.97 }}
-                className="attached-popup"
-              >
-                <div className="flex items-start gap-2">
-                  <span className="attached-popup-tag">Passage</span>
-                  <p className="attached-popup-text">{attachedSelection}</p>
-                  <button
-                    type="button"
-                    onClick={() => setAttachedSelection('')}
-                    className="text-black/30 hover:text-black/60 flex-shrink-0"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {dragOver && (
-            <div className="prompt-drop-hint">Drop to attach passage</div>
-          )}
-
-          <div className="flex items-end gap-2">
-            <textarea
-              value={aiPrompt}
-              onChange={(e) => setAiPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  handleAIAssist()
-                }
-              }}
-              rows={2}
-              placeholder={attachedSelection ? 'How should this passage change?' : 'Ask Claude to refine your writing…'}
-              className="glass-input flex-1 resize-none px-3 py-2 text-sm min-h-[2.5rem]"
-            />
-            <button
-              type="button"
-              onClick={handleAIAssist}
-              disabled={isStreaming || !aiPrompt.trim() || !apiKey || !!review}
-              className="btn-primary flex h-10 w-10 flex-shrink-0 items-center justify-center disabled:opacity-40"
-              title="Send"
-            >
-              {isStreaming ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-            </button>
           </div>
-        </div>
-      </aside>
+        ))}
+        <button className="doc-tab-add" onClick={handleNewTab} title="New tab">
+          <Plus size={12} />
+        </button>
+      </div>
+
+      <AnimatePresence initial={false}>
+        {assistantOpen && (
+          <motion.div
+            key="assistant"
+            initial={{ opacity: 0, x: 16, scale: 0.98 }}
+            animate={{ opacity: 1, x: 0, scale: 1 }}
+            exit={{ opacity: 0, x: 16, scale: 0.98 }}
+            transition={{ duration: 0.22, ease: [0.25, 1, 0.5, 1] }}
+            className="assistant-float"
+          >
+            <div className="assistant-panel">
+              <div className="flex-1 overflow-y-auto px-3 pt-4 pb-44 space-y-3">
+                {chat.map((entry) => {
+                  const suggestion = entry.suggestionId
+                    ? suggestions.find((s) => s.id === entry.suggestionId)
+                    : undefined
+
+                  return (
+                    <div key={entry.id} className="space-y-2">
+                      <div className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div
+                          className={`chat-bubble ${
+                            entry.role === 'user'
+                              ? 'chat-bubble-user'
+                              : entry.kind === 'style'
+                              ? 'chat-bubble-style'
+                              : 'chat-bubble-ai'
+                          }`}
+                        >
+                          {entry.kind === 'style' && (
+                            <p className="mb-1 text-[10px] font-semibold text-violet-700/70">Stylism</p>
+                          )}
+                          <p className="whitespace-pre-wrap">{entry.content}</p>
+                          {entry.role === 'assistant' && suggestion?.accepted === true && (
+                            <p className="mt-1.5 flex items-center gap-1 text-[10px] text-green-700">
+                              <Check size={10} /> Applied
+                            </p>
+                          )}
+                          {entry.role === 'assistant' && suggestion?.accepted === false && (
+                            <p className="mt-1.5 flex items-center gap-1 text-[10px] text-black/40">
+                              <X size={10} /> Rejected
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+
+                {isStreaming && (
+                  <div className="flex justify-start">
+                    <div className="chat-bubble chat-bubble-ai">
+                      <div className="flex items-center gap-2 text-black/40">
+                        <Loader2 size={12} className="animate-spin" />
+                        Composing precise edits…
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* Floating glass input */}
+              <div
+                className={`assistant-input-zone ${dragOver ? 'prompt-dropzone-active' : ''}`}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  setDragOver(true)
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handlePromptDrop}
+              >
+                <AnimatePresence>
+                  {attachedSelection && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 8, scale: 0.97 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                      className="attached-popup"
+                    >
+                      <div className="flex items-start gap-2">
+                        <span className="attached-popup-tag">Passage</span>
+                        <p className="attached-popup-text">{attachedSelection}</p>
+                        <button
+                          type="button"
+                          onClick={detachSelection}
+                          className="text-black/30 hover:text-black/60 flex-shrink-0"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {dragOver && <div className="prompt-drop-hint">Drop to attach passage</div>}
+
+                <div className="assistant-input-bar">
+                  <textarea
+                    value={aiPrompt}
+                    onChange={(e) => setAiPrompt(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        handleAIAssist()
+                      }
+                    }}
+                    rows={2}
+                    placeholder={
+                      attachedSelection
+                        ? 'How should this passage change? Press Enter to send.'
+                        : 'Press Enter to send…'
+                    }
+                    className="assistant-textarea"
+                    disabled={isStreaming}
+                  />
+                  {isStreaming && (
+                    <Loader2 size={14} className="assistant-input-spinner animate-spin flex-shrink-0" />
+                  )}
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Floating accept / reject all — does not shift document layout */}
+      <AnimatePresence>
+        {review && (
+          <motion.div
+            key="review-float"
+            initial={{ opacity: 0, y: 10, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 10, scale: 0.96 }}
+            transition={{ duration: 0.16, ease: [0.25, 1, 0.5, 1] }}
+            className="review-float"
+            onMouseDown={(e) => e.preventDefault()}
+          >
+            <span className="review-float-label">
+              {review.stackedIds.length} edit{review.stackedIds.length === 1 ? '' : 's'}
+            </span>
+            <button type="button" className="review-float-btn review-float-accept" onClick={acceptAll}>
+              <Check size={14} />
+              Accept all
+            </button>
+            <button type="button" className="review-float-btn review-float-reject" onClick={rejectAll}>
+              <X size={14} />
+              Reject all
+            </button>
+            <span className="review-float-hint">Ctrl+Enter</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Overlays */}
       <AnimatePresence>
@@ -801,16 +1040,6 @@ INSTRUCTION: ${instruction}`
         )}
       </AnimatePresence>
 
-      <AnimatePresence>
-        {stylismOpen && (
-          <StylismMode
-            rules={styleRules}
-            onChange={setStyleRules}
-            onReset={resetStyleRules}
-            onClose={() => setStylismOpen(false)}
-          />
-        )}
-      </AnimatePresence>
     </div>
   )
 }

@@ -279,6 +279,28 @@ app.post('/api/chat', async (req, res) => {
   }
 })
 
+// Tool-calling chat — returns the raw content blocks (text + tool_use) so the
+// client can apply agentic actions (e.g. Stylism network updates)
+app.post('/api/chat/tools', async (req, res) => {
+  const { messages, system, apiKey, tools, maxTokens } = req.body
+  if (!Array.isArray(tools) || tools.length === 0) {
+    return res.status(400).json({ error: 'Tools required' })
+  }
+  try {
+    const client = getClient(apiKey)
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-5',
+      max_tokens: maxTokens || 1024,
+      ...(system ? { system } : {}),
+      messages,
+      tools,
+    })
+    res.json({ content: response.content, stop_reason: response.stop_reason })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
 // Non-streaming chat for simpler calls
 app.post('/api/chat/sync', async (req, res) => {
   const { messages, system, apiKey, maxTokens } = req.body
