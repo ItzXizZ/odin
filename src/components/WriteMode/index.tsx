@@ -1038,6 +1038,7 @@ INSTRUCTION: ${instruction}`
                 onClick={() => { setShowContextHouse(true); setAssistantOpen(false) }}
                 className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70"
                 title="Context House — research materials for this document"
+                data-tour="context"
               >
                 <Inbox size={15} />
               </button>
@@ -1055,7 +1056,7 @@ INSTRUCTION: ${instruction}`
         <div className="flex-1 overflow-hidden relative">
           {/* Editor — kept mounted; hidden when a full-screen panel is covering it */}
           <div className={`h-full overflow-y-auto${showDocLibrary || showContextHouse ? ' invisible pointer-events-none' : ''}`}>
-            <div className="tiptap-editor max-w-3xl mx-auto min-h-full">
+            <div className="tiptap-editor max-w-3xl mx-auto min-h-full" data-tour="editor">
               <EditorContent editor={editor} className="min-h-full" />
             </div>
           </div>
@@ -1186,6 +1187,7 @@ INSTRUCTION: ${instruction}`
             exit={{ opacity: 0, x: 16, scale: 0.98 }}
             transition={{ duration: 0.22, ease: [0.25, 1, 0.5, 1] }}
             className="assistant-float"
+            data-tour="assistant"
           >
             <div className="assistant-panel">
               {chatThreads.length > 0 && (

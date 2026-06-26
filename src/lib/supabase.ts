@@ -25,9 +25,21 @@ export const supabase: SupabaseClient | null = isAuthConfigured
     })
   : null
 
+/**
+ * Cached access token, kept fresh by the auth layer's onAuthStateChange handler.
+ *
+ * We deliberately DON'T call `supabase.auth.getSession()` in the data path:
+ * supabase-js holds an auth lock while running onAuthStateChange callbacks, and
+ * calling getSession() (directly or via store rehydration) from inside that
+ * window deadlocks. Reading a cached value avoids the lock entirely.
+ */
+let cachedAccessToken: string | null = null
+
+export function setCachedAccessToken(token: string | null) {
+  cachedAccessToken = token
+}
+
 /** Current access token (JWT) for authorizing API calls, or null if signed out. */
 export async function getAccessToken(): Promise<string | null> {
-  if (!supabase) return null
-  const { data } = await supabase.auth.getSession()
-  return data.session?.access_token ?? null
+  return cachedAccessToken
 }

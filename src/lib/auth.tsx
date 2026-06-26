@@ -19,7 +19,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
-import { supabase, isAuthConfigured } from './supabase'
+import { supabase, isAuthConfigured, setCachedAccessToken } from './supabase'
 import { useStore } from '../store/useStore'
 import { setWorkspaceUser } from './workspaceStorage'
 
@@ -52,18 +52,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
+      // Synchronous, lock-safe work only inside the callback.
+      setCachedAccessToken(sess?.access_token ?? null)
       setSession(sess)
       setUser(sess?.user ?? null)
 
       const uid = sess?.user?.id ?? null
-      // Only (re)hydrate when the identity actually changes — not on every
-      // token refresh, which would clobber unsaved in-memory edits.
-      if (uid !== lastUserId.current) {
-        lastUserId.current = uid
-        setWorkspaceUser(uid)
-        void useStore.persist.rehydrate()
-      }
-      setReady(true)
+      const identityChanged = uid !== lastUserId.current
+      lastUserId.current = uid
+
+      // Defer anything that might touch Supabase or trigger store rehydration:
+      // supabase-js holds an auth lock during this callback, so calling auth
+      // methods now (directly or via getAccessToken) would deadlock.
+      setTimeout(() => {
+        // Only (re)hydrate when the identity actually changes — not on every
+        // token refresh, which would clobber unsaved in-memory edits.
+        if (identityChanged) {
+          setWorkspaceUser(uid)
+          void useStore.persist.rehydrate()
+        }
+        setReady(true)
+      }, 0)
     })
 
     return () => sub.subscription.unsubscribe()
