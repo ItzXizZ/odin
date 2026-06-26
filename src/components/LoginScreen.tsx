@@ -94,6 +94,16 @@ export default function LoginScreen() {
         <p style={{ marginTop: 18, fontSize: 12, color: 'rgba(60,60,60,0.5)' }}>
           We only use your Google account to identify you. Nothing is posted on your behalf.
         </p>
+
+        <p style={{ marginTop: 12, fontSize: 12, color: 'rgba(60,60,60,0.45)' }}>
+          <a href="/privacy" style={{ color: 'inherit', textDecoration: 'underline' }}>
+            Privacy
+          </a>
+          {' · '}
+          <a href="/terms" style={{ color: 'inherit', textDecoration: 'underline' }}>
+            Terms
+          </a>
+        </p>
       </motion.div>
     </div>
   )

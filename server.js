@@ -483,6 +483,12 @@ app.post('/api/storage/upload', async (req, res) => {
 })
 
 if (isProduction) {
+  app.get('/privacy', (_req, res) => {
+    res.sendFile(path.join(distPath, 'privacy/index.html'))
+  })
+  app.get('/terms', (_req, res) => {
+    res.sendFile(path.join(distPath, 'terms/index.html'))
+  })
   app.use(express.static(distPath))
   app.get('*', (_req, res) => {
     res.sendFile(path.join(distPath, 'index.html'))
