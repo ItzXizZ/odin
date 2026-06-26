@@ -24,6 +24,8 @@ export interface TourStep {
   title: string
   body: string
   placement?: Placement
+  /** Cap the spotlight height (px) — useful for tall, full-height elements. */
+  maxHeight?: number
 }
 
 export const TOUR_STEPS: TourStep[] = [
@@ -48,16 +50,25 @@ export const TOUR_STEPS: TourStep[] = [
     tab: 'write',
     target: '[data-tour="editor"]',
     placement: 'right',
+    maxHeight: 260,
     title: 'Write',
-    body: 'This is your document — just start typing. Formatting, tabs, and word count live along the top.',
+    body: 'This is your document — just start typing. Formatting and word count live along the top.',
   },
   {
-    id: 'assistant',
+    id: 'doctabs',
     tab: 'write',
-    target: '[data-tour="assistant"]',
-    placement: 'left',
-    title: 'AI assistant',
-    body: 'Ask it to draft, rewrite, or tighten anything. Edits appear as a diff you accept or reject inline.',
+    target: '[data-tour="doctabs"]',
+    placement: 'right',
+    title: 'Document tabs',
+    body: 'A single document can hold several tabs — add, rename, or remove them here to keep related drafts together.',
+  },
+  {
+    id: 'doclibrary',
+    tab: 'write',
+    target: '[data-tour="doclibrary"]',
+    placement: 'bottom',
+    title: 'Document library',
+    body: 'Browse, create, and switch between all of your documents from the library.',
   },
   {
     id: 'context',
@@ -68,12 +79,36 @@ export const TOUR_STEPS: TourStep[] = [
     body: 'Add PDFs, notes, and research here so the assistant grounds its help in your own sources.',
   },
   {
+    id: 'assistant',
+    tab: 'write',
+    target: '[data-tour="assistant"]',
+    placement: 'left',
+    title: 'AI assistant',
+    body: 'Ask it to draft, rewrite, or tighten anything. Edits appear as a diff you accept or reject inline.',
+  },
+  {
+    id: 'assistant-toggle',
+    tab: 'write',
+    target: '[data-tour="assistant-toggle"]',
+    placement: 'bottom',
+    title: 'Show / hide the assistant',
+    body: 'Toggle the AI panel with this button whenever you want a clear, full-width writing space.',
+  },
+  {
     id: 'exploration',
     tab: 'exploration',
     target: '[data-tour="main"]',
     placement: 'center',
     title: 'Exploration',
     body: 'Branch ideas on an infinite canvas backed by live web research, then carry the best threads into your draft.',
+  },
+  {
+    id: 'sources',
+    tab: 'exploration',
+    target: '[data-tour="sources"]',
+    placement: 'left',
+    title: 'Sources tab',
+    body: 'Every answer is grounded in real web research. Open the Sources tab to read and cite the references behind it.',
   },
   {
     id: 'stylism',

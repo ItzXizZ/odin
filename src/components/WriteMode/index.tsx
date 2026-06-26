@@ -8,7 +8,7 @@ import TextAlign from '@tiptap/extension-text-align'
 import {
   Bold, Italic, UnderlineIcon, AlignLeft, AlignCenter, AlignRight,
   Check, X, Loader2, Undo2, Redo2, Crosshair,
-  Plus, PanelRightClose, PanelRightOpen, LayoutGrid, Inbox,
+  Plus, PanelRightClose, PanelRightOpen, LayoutGrid, Inbox, Send,
 } from 'lucide-react'
 import { diffWords } from 'diff'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -39,6 +39,7 @@ import {
   type WriteChatMessage,
   type WriteChatThread,
 } from './chatThreads'
+import { subscribeWorkspaceSaveStatus, type WorkspaceSaveStatus } from '../../lib/workspaceStorage'
 
 /** Highlight color marking the passage currently attached to the assistant. */
 const REF_HIGHLIGHT_COLOR = '#ffe690'
@@ -245,9 +246,11 @@ export default function WriteMode() {
   const [showDocLibrary, setShowDocLibrary] = useState(false)
   const [showContextHouse, setShowContextHouse] = useState(false)
   const [renamingTab, setRenamingTab] = useState<{ id: string; value: string } | null>(null)
+  const [saveStatus, setSaveStatus] = useState<WorkspaceSaveStatus>('idle')
 
   const skipEmptySaveRef = useRef(true)
   const chatEndRef = useRef<HTMLDivElement>(null)
+  const promptRef = useRef<HTMLTextAreaElement>(null)
   const editorRef = useRef<Editor | null>(null)
   const reviewActiveRef = useRef(false)
   const reviewStateRef = useRef<ReviewState | null>(null)
@@ -301,6 +304,8 @@ export default function WriteMode() {
     return useStore.persist.onFinishHydration(() => setHydrated(true))
   }, [])
 
+  useEffect(() => subscribeWorkspaceSaveStatus(setSaveStatus), [])
+
   useEffect(() => {
     if (!hydrated) return
     const tab = useStore.getState().getActiveTab()
@@ -313,6 +318,24 @@ export default function WriteMode() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chat, review, isStreaming])
+
+  const syncPromptHeight = useCallback(() => {
+    const el = promptRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    const maxHeight = parseFloat(getComputedStyle(el).maxHeight)
+    if (Number.isFinite(maxHeight) && el.scrollHeight > maxHeight) {
+      el.style.height = `${maxHeight}px`
+      el.style.overflowY = 'auto'
+    } else {
+      el.style.height = `${el.scrollHeight}px`
+      el.style.overflowY = 'hidden'
+    }
+  }, [])
+
+  useEffect(() => {
+    syncPromptHeight()
+  }, [aiPrompt, syncPromptHeight])
 
   const editor = useEditor(
     {
@@ -981,6 +1004,7 @@ INSTRUCTION: ${instruction}`
                 onClick={() => { setShowDocLibrary(true); setAssistantOpen(false) }}
                 className="rounded-lg p-1.5 text-black/35 transition hover:bg-black/5 hover:text-black/60 flex-shrink-0"
                 title="Document library"
+                data-tour="doclibrary"
               >
                 <LayoutGrid size={14} />
               </button>
@@ -1033,6 +1057,39 @@ INSTRUCTION: ${instruction}`
               ))}
             </div>
             <div className="flex items-center gap-1.5 flex-shrink-0">
+              <AnimatePresence mode="wait">
+                {saveStatus !== 'idle' && (
+                  <motion.span
+                    key={saveStatus}
+                    initial={{ opacity: 0, y: 2 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -2 }}
+                    transition={{ duration: 0.15 }}
+                    className={`flex items-center gap-1 text-xs mr-1 ${
+                      saveStatus === 'error'
+                        ? 'text-red-500/80'
+                        : saveStatus === 'saved'
+                          ? 'text-emerald-600/80'
+                          : 'text-black/40'
+                    }`}
+                    aria-live="polite"
+                  >
+                    {saveStatus === 'saving' && (
+                      <>
+                        <Loader2 size={12} className="animate-spin" />
+                        Saving…
+                      </>
+                    )}
+                    {saveStatus === 'saved' && (
+                      <>
+                        <Check size={12} />
+                        Saved
+                      </>
+                    )}
+                    {saveStatus === 'error' && 'Save failed'}
+                  </motion.span>
+                )}
+              </AnimatePresence>
               <span className="text-xs text-black/35 mr-1">{wordCount} words</span>
               <button
                 onClick={() => { setShowContextHouse(true); setAssistantOpen(false) }}
@@ -1046,6 +1103,7 @@ INSTRUCTION: ${instruction}`
                 onClick={() => { setAssistantOpen((v) => !v); setShowContextHouse(false) }}
                 className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70"
                 title={assistantOpen ? 'Hide assistant' : 'Show assistant'}
+                data-tour="assistant-toggle"
               >
                 {assistantOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
               </button>
@@ -1132,7 +1190,7 @@ INSTRUCTION: ${instruction}`
       </div>
 
       {/* Floating vertical document tabs — hidden when a panel is covering the workspace */}
-      {!showDocLibrary && !showContextHouse && <div className="doc-tabs-float" aria-label="Document tabs">
+      {!showDocLibrary && !showContextHouse && <div className="doc-tabs-float" aria-label="Document tabs" data-tour="doctabs">
         {docTabs.map((tab) => (
           <div
             key={tab.id}
@@ -1227,7 +1285,7 @@ INSTRUCTION: ${instruction}`
                   </button>
                 </div>
               )}
-              <div className="flex-1 overflow-y-auto px-3 pt-3 pb-44 space-y-3">
+              <div className="flex-1 overflow-y-auto px-3 pt-3 pb-3 space-y-3 min-h-0">
                 {chat.map((entry) => {
                   const suggestion = entry.suggestionId
                     ? suggestions.find((s) => s.id === entry.suggestionId)
@@ -1292,25 +1350,40 @@ INSTRUCTION: ${instruction}`
 
                 <div className="assistant-input-bar">
                   <textarea
+                    ref={promptRef}
                     value={aiPrompt}
-                    onChange={(e) => setAiPrompt(e.target.value)}
+                    onChange={(e) => {
+                      setAiPrompt(e.target.value)
+                      requestAnimationFrame(syncPromptHeight)
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault()
                         handleAIAssist()
                       }
                     }}
-                    rows={2}
+                    rows={1}
                     placeholder={
                       attachedSelection
-                        ? 'How should this passage change? Press Enter to send.'
-                        : 'Press Enter to send…'
+                        ? 'How should this passage change?'
+                        : 'Ask for edits or chat with the assistant…'
                     }
                     className="assistant-textarea"
                     disabled={isStreaming}
                   />
-                  {isStreaming && (
+                  {isStreaming ? (
                     <Loader2 size={14} className="assistant-input-spinner animate-spin flex-shrink-0" />
+                  ) : (
+                    <button
+                      type="button"
+                      className="glass-btn assistant-send-btn"
+                      onClick={handleAIAssist}
+                      disabled={!aiPrompt.trim() || !apiKey}
+                      title="Send message"
+                      aria-label="Send message"
+                    >
+                      <Send size={14} />
+                    </button>
                   )}
                 </div>
               </div>

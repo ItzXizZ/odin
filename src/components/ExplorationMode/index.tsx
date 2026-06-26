@@ -1367,6 +1367,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
           onClick={() => setSourcesOpen((v) => !v)}
           className="absolute left-0 top-1/2 -translate-x-full -translate-y-1/2 h-20 w-6 flex flex-col items-center justify-center gap-1.5 rounded-l-lg border border-r-0 border-black/8 bg-white/55 backdrop-blur-sm hover:bg-white/80 transition-colors"
           title={sourcesOpen ? 'Hide sources' : 'Show sources'}
+          data-tour="sources"
         >
           <ChevronLeft
             size={11}

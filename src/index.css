@@ -1765,10 +1765,7 @@ kbd {
 }
 
 .assistant-input-zone {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  flex-shrink: 0;
   padding: 0.5rem 0.75rem 1rem;
   display: flex;
   flex-direction: column;
@@ -1800,6 +1797,19 @@ kbd {
   margin-bottom: 0.35rem;
 }
 
+.assistant-send-btn {
+  padding: 0;
+  width: 2rem;
+  height: 2rem;
+  margin-bottom: 0.15rem;
+  flex-shrink: 0;
+  color: rgba(30, 65, 140, 0.78);
+}
+
+.assistant-send-btn:not(:disabled):hover {
+  color: rgba(25, 50, 110, 0.95);
+}
+
 .assistant-textarea {
   flex: 1;
   resize: none;
@@ -1811,7 +1821,9 @@ kbd {
   line-height: 1.5;
   color: var(--text-primary);
   padding: 0.3em 0;
-  max-height: 7em;
+  min-height: calc(2 * 0.82rem * 1.5 + 0.6em);
+  max-height: calc(6 * 0.82rem * 1.5 + 0.6em);
+  overflow-y: hidden;
 }
 
 .assistant-textarea::placeholder {

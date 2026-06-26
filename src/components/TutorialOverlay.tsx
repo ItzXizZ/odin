@@ -62,12 +62,14 @@ export default function TutorialOverlay() {
   if (!active || !step) return null
 
   const pad = 8
+  const cappedHeight =
+    rect && step.maxHeight ? Math.min(rect.height, step.maxHeight) : rect?.height ?? 0
   const spot: Rect | null = rect
     ? {
         top: rect.top - pad,
         left: rect.left - pad,
         width: rect.width + pad * 2,
-        height: rect.height + pad * 2,
+        height: cappedHeight + pad * 2,
       }
     : null
 

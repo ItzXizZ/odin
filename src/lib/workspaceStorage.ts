@@ -25,11 +25,36 @@ import { getAccessToken } from './supabase'
 
 const DEBOUNCE_MS = 800
 const MAX_WAIT_MS = 5000
+const SAVED_NOTICE_MS = 2000
+
+export type WorkspaceSaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 let hydrated = false
 let pendingValue: string | null = null
 let firstPendingAt = 0
 let flushTimer: ReturnType<typeof setTimeout> | null = null
+let saveStatus: WorkspaceSaveStatus = 'idle'
+let savedNoticeTimer: ReturnType<typeof setTimeout> | null = null
+const saveStatusListeners = new Set<(status: WorkspaceSaveStatus) => void>()
+
+function setSaveStatus(next: WorkspaceSaveStatus) {
+  if (saveStatus === next) return
+  saveStatus = next
+  for (const listener of saveStatusListeners) listener(next)
+}
+
+export function getWorkspaceSaveStatus(): WorkspaceSaveStatus {
+  return saveStatus
+}
+
+/** Subscribe to cloud sync status (local mirror updates are instant and not reported). */
+export function subscribeWorkspaceSaveStatus(listener: (status: WorkspaceSaveStatus) => void) {
+  saveStatusListeners.add(listener)
+  listener(saveStatus)
+  return () => {
+    saveStatusListeners.delete(listener)
+  }
+}
 
 /** Active user id — set by the auth layer so storage can be scoped per person. */
 let currentUserId: string | null = null
@@ -101,7 +126,27 @@ function flushNow(useKeepalive = false) {
   const value = pendingValue
   pendingValue = null
   firstPendingAt = 0
-  void pushToCloud(value, useKeepalive)
+  if (savedNoticeTimer) {
+    clearTimeout(savedNoticeTimer)
+    savedNoticeTimer = null
+  }
+  setSaveStatus('saving')
+  void pushToCloud(value, useKeepalive).then((ok) => {
+    if (pendingValue != null) {
+      setSaveStatus('saving')
+      schedule()
+      return
+    }
+    if (ok) {
+      setSaveStatus('saved')
+      savedNoticeTimer = setTimeout(() => {
+        savedNoticeTimer = null
+        if (pendingValue == null) setSaveStatus('idle')
+      }, SAVED_NOTICE_MS)
+    } else {
+      setSaveStatus('error')
+    }
+  })
 }
 
 function schedule() {
@@ -150,6 +195,11 @@ export const workspaceStorage: StateStorage = {
     if (!hydrated) return
     pendingValue = value
     if (!firstPendingAt) firstPendingAt = Date.now()
+    if (savedNoticeTimer) {
+      clearTimeout(savedNoticeTimer)
+      savedNoticeTimer = null
+    }
+    setSaveStatus('saving')
     schedule()
   },
 
