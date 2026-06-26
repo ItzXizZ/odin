@@ -762,81 +762,206 @@
 }
 
 /* ============================================================
-   WRITE MODE — welcome / empty state
+   HOME — welcome landing + tutorial
    ============================================================ */
-.write-welcome {
-  position: absolute;
-  inset: 0;
+.home-scroll {
+  height: 100%;
+  width: 100%;
+  overflow-y: auto;
   display: flex;
-  align-items: center;
   justify-content: center;
-  padding: 2rem;
-  pointer-events: none;
+  padding: 2.5rem 1.5rem 4rem;
 }
 
-.write-welcome-inner {
-  max-width: 30rem;
+.home-inner {
   width: 100%;
+  max-width: 46rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   text-align: center;
 }
 
-.write-welcome-logo {
-  height: 3.75rem;
+.home-logo {
+  height: 4.5rem;
   width: auto;
   display: block;
-  margin: 0 auto 1.25rem;
-  opacity: 0.9;
+  margin-bottom: 1.1rem;
 }
 
-.write-welcome-title {
+.home-title {
   font-family: 'Inter', sans-serif;
-  font-size: 1.85rem;
+  font-size: 2.3rem;
   font-weight: 700;
-  letter-spacing: -0.03em;
-  color: rgba(35, 35, 35, 0.92);
+  letter-spacing: -0.035em;
+  color: rgba(32, 32, 32, 0.94);
 }
 
-.write-welcome-sub {
-  margin-top: 0.55rem;
-  font-size: 0.97rem;
+.home-sub {
+  margin-top: 0.6rem;
+  max-width: 32rem;
+  font-size: 1.02rem;
   line-height: 1.55;
-  color: rgba(60, 60, 60, 0.62);
+  color: rgba(60, 60, 60, 0.64);
 }
 
-.write-welcome-modes {
-  margin-top: 1.65rem;
+.home-cta {
+  margin-top: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1.4rem;
+  border: none;
+  border-radius: 0.85rem;
+  background: rgba(35, 35, 35, 0.92);
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+.home-cta:hover {
+  transform: translateY(-1px);
+  background: rgba(20, 20, 20, 0.96);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.22);
+}
+.home-cta:active {
+  transform: translateY(0);
+}
+
+.home-modes {
+  margin-top: 2.4rem;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.9rem;
+}
+@media (max-width: 720px) {
+  .home-modes {
+    grid-template-columns: 1fr;
+  }
+}
+
+.home-mode-card {
+  all: unset;
+  cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 1.1rem 1.1rem 1rem;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 1rem;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+  transition: transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease;
+}
+.home-mode-card:hover {
+  transform: translateY(-3px);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.12);
+}
+
+.home-mode-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 0.7rem;
+  background: rgba(35, 35, 35, 0.06);
+  color: rgba(35, 35, 35, 0.85);
+}
+
+.home-mode-label {
+  font-size: 1rem;
+  font-weight: 650;
+  color: rgba(32, 32, 32, 0.92);
+}
+
+.home-mode-desc {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: rgba(60, 60, 60, 0.62);
   text-align: left;
 }
 
-.write-welcome-modes > div {
+.home-mode-open {
+  margin-top: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: rgba(35, 35, 35, 0.55);
+}
+
+.home-tutorial {
+  margin-top: 3rem;
+  width: 100%;
+  text-align: left;
+}
+
+.home-tutorial-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: rgba(32, 32, 32, 0.9);
+  margin-bottom: 1rem;
+  text-align: center;
+}
+
+.home-steps {
   display: flex;
   flex-direction: column;
-  gap: 0.12rem;
-  padding: 0.7rem 0.9rem;
-  background: rgba(255, 255, 255, 0.5);
+  gap: 0.7rem;
+}
+
+.home-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  padding: 0.9rem 1.05rem;
+  background: rgba(255, 255, 255, 0.45);
   border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 0.75rem;
+  border-radius: 0.85rem;
 }
 
-.write-welcome-modes strong {
-  font-size: 0.85rem;
-  font-weight: 650;
-  color: rgba(35, 35, 35, 0.9);
-}
-
-.write-welcome-modes span {
+.home-step-num {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 50%;
+  background: rgba(35, 35, 35, 0.9);
+  color: #fff;
   font-size: 0.82rem;
-  line-height: 1.45;
-  color: rgba(60, 60, 60, 0.6);
+  font-weight: 700;
 }
 
-.write-welcome-hint {
-  margin-top: 1.5rem;
-  font-size: 0.8rem;
-  color: rgba(60, 60, 60, 0.48);
+.home-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.home-step-text strong {
+  font-size: 0.9rem;
+  font-weight: 650;
+  color: rgba(32, 32, 32, 0.9);
+}
+.home-step-text span {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: rgba(60, 60, 60, 0.62);
+}
+
+.home-foot {
+  margin-top: 2.2rem;
+  font-size: 0.82rem;
+  color: rgba(60, 60, 60, 0.5);
 }
 
 /* ============================================================

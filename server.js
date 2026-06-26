@@ -2,7 +2,9 @@ import express from 'express'
 import Anthropic from '@anthropic-ai/sdk'
 import cors from 'cors'
 import multer from 'multer'
+import path from 'path'
 import { createRequire } from 'module'
+import { fileURLToPath } from 'url'
 import dotenv from 'dotenv'
 import { generateVisualAsset, proxyImage, decideExplorationAction } from './server/visual.js'
 import {
@@ -19,10 +21,16 @@ dotenv.config()
 const require = createRequire(import.meta.url)
 const pdfParse = require('pdf-parse')
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const distPath = path.join(__dirname, 'dist')
+const isProduction = process.env.NODE_ENV === 'production'
+
 const app = express()
 const PORT = process.env.PORT || 3001
 
-app.use(cors({ origin: 'http://localhost:5173' }))
+if (!isProduction) {
+  app.use(cors({ origin: 'http://localhost:5173' }))
+}
 app.use(express.json({ limit: '30mb' }))
 
 const upload = multer({ limits: { fileSize: 20 * 1024 * 1024 } })
@@ -474,6 +482,13 @@ app.post('/api/storage/upload', async (req, res) => {
   }
 })
 
+if (isProduction) {
+  app.use(express.static(distPath))
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'))
+  })
+}
+
 app.listen(PORT, async () => {
   if (isSupabaseConfigured()) {
     try {
@@ -482,10 +497,10 @@ app.listen(PORT, async () => {
       console.warn('  Supabase bucket setup warning:', err.message)
     }
   }
-  console.log(`\n  Odin API server running on http://localhost:${PORT}`)
+  console.log(`\n  Odin ${isProduction ? 'production' : 'API'} server on http://localhost:${PORT}`)
   console.log(`  API key: ${process.env.ANTHROPIC_API_KEY ? '✓ loaded from .env' : '✗ not set (use in-app settings)'}`)
   console.log(`  Research: ${process.env.TAVILY_API_KEY ? '✓ Tavily' : '○ DuckDuckGo fallback (set TAVILY_API_KEY for better results)'}`)
   console.log(`  Image gen: ${process.env.OPENAI_API_KEY ? '✓ GPT Image (gpt-image-1)' : process.env.GOOGLE_API_KEY ? '✓ Gemini Imagen' : process.env.REPLICATE_API_KEY ? '✓ Flux Pro' : '○ PubChem + web photos only (add OPENAI_API_KEY for best quality)'}`)
   console.log(`  Cloud sync: ${isSupabaseConfigured() ? '✓ Supabase (state + assets)' : '○ localStorage only (set SUPABASE_URL + SUPABASE_SECRET_KEY)'}`)
-  console.log(`\n  Frontend: http://localhost:5173\n`)
+  if (!isProduction) console.log(`\n  Frontend: http://localhost:5173\n`)
 })

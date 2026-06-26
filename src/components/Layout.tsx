@@ -4,6 +4,7 @@ import { useStore, type AppTab } from '../store/useStore'
 import ExplorationMode from './ExplorationMode'
 import WriteMode from './WriteMode'
 import StylismMode from './WriteMode/StylismMode'
+import HomeMode from './HomeMode'
 import UserMenu from './UserMenu'
 import logo from './logo.png'
 
@@ -37,11 +38,17 @@ export default function Layout() {
         className="flex-shrink-0 flex items-center px-5 py-3"
         style={{ background: 'transparent', position: 'relative' }}
       >
-        {/* Logo */}
-        <div className="app-logo" aria-label="Odin">
+        {/* Logo — click to return to the home / welcome screen */}
+        <button
+          type="button"
+          className="app-logo"
+          aria-label="Odin home"
+          onClick={() => setActiveTab('home')}
+          style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
+        >
           <img src={logo} alt="" className="app-logo-img" />
           <span className="app-logo-text">Odin</span>
-        </div>
+        </button>
 
         {/* Glass pill nav — absolutely centred in the header */}
         <div
@@ -86,6 +93,7 @@ export default function Layout() {
               transition={{ duration: 0.15 }}
               className="h-full absolute inset-0"
             >
+              {activeTab === 'home'        && <HomeMode />}
               {activeTab === 'exploration' && <ExplorationMode />}
               {activeTab === 'stylism'     && <StylismMode />}
             </motion.div>

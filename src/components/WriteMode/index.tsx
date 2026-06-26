@@ -39,7 +39,6 @@ import {
   type WriteChatMessage,
   type WriteChatThread,
 } from './chatThreads'
-import logo from '../logo.png'
 
 /** Highlight color marking the passage currently attached to the assistant. */
 const REF_HIGHLIGHT_COLOR = '#ffe690'
@@ -1060,47 +1059,6 @@ INSTRUCTION: ${instruction}`
               <EditorContent editor={editor} className="min-h-full" />
             </div>
           </div>
-
-          {/* Welcome / empty-state — fades away the moment you start writing */}
-          <AnimatePresence>
-            {!showDocLibrary && !showContextHouse && !review && !isStreaming && editor?.isEmpty && (
-              <motion.div
-                key="write-welcome"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.35 }}
-                className="write-welcome"
-                aria-hidden="true"
-              >
-                <div className="write-welcome-inner">
-                  <img src={logo} alt="" className="write-welcome-logo" />
-                  <h1 className="write-welcome-title">Welcome to Odin</h1>
-                  <p className="write-welcome-sub">
-                    Your AI writing studio — research, draft, and refine your voice
-                    all in one calm space.
-                  </p>
-                  <div className="write-welcome-modes">
-                    <div>
-                      <strong>Write</strong>
-                      <span>Draft alongside an AI editor that proposes precise, reviewable edits.</span>
-                    </div>
-                    <div>
-                      <strong>Exploration</strong>
-                      <span>Branch ideas on an infinite canvas backed by live web research.</span>
-                    </div>
-                    <div>
-                      <strong>Stylism</strong>
-                      <span>Teach Odin your voice once and it keeps to your style as you write.</span>
-                    </div>
-                  </div>
-                  <p className="write-welcome-hint">
-                    Start typing here, or ask the assistant on the right to draft something for you.
-                  </p>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
 
           {/* Documents library — slides up like a mode switch */}
           <AnimatePresence initial={false}>

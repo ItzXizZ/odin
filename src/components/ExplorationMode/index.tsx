@@ -164,7 +164,7 @@ export default function ExplorationMode() {
       setLinkPopup({ x, y, url, sourceNodeId, linkText, embeddable: null })
       setContextMenu(null)
       // Check embeddability in the background
-      fetch(`http://localhost:3001/api/can-embed?url=${encodeURIComponent(url)}`)
+      fetch(`/api/can-embed?url=${encodeURIComponent(url)}`)
         .then((r) => r.json())
         .then((data: { embeddable: boolean }) => {
           setLinkPopup((prev) =>

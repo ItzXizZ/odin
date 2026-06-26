@@ -15,7 +15,7 @@ import {
   type StyleActivation,
 } from '../lib/style'
 
-export type AppTab = 'stream' | 'exploration' | 'write' | 'stylism' | 'grade'
+export type AppTab = 'home' | 'stream' | 'exploration' | 'write' | 'stylism' | 'grade'
 
 import type { WriteChatThread } from '../components/WriteMode/chatThreads'
 
@@ -391,7 +391,7 @@ interface AppState {
 export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
-      activeTab: 'context',
+      activeTab: 'home',
       apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY ?? '',
       showSettings: false,
 
