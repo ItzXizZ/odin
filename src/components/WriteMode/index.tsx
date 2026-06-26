@@ -296,6 +296,36 @@ export default function WriteMode() {
     [updateActiveTabChat]
   )
 
+  const deleteChatThread = useCallback(
+    (threadId: string) => {
+      const tab = useStore.getState().getActiveTab()
+      const { threads, activeId } = ensureTabChatState(tab)
+      const deletingActive = threadId === activeId
+      const idx = threads.findIndex((t) => t.id === threadId)
+      if (idx === -1) return
+
+      let nextThreads = threads.filter((t) => t.id !== threadId)
+      if (nextThreads.length === 0) nextThreads = [createChatThread([])]
+
+      let nextActiveId = activeId
+      if (deletingActive) {
+        nextActiveId = nextThreads[Math.min(idx, nextThreads.length - 1)]?.id ?? nextThreads[0].id
+      } else if (!nextThreads.some((t) => t.id === activeId)) {
+        nextActiveId = nextThreads[0].id
+      }
+
+      updateActiveTabChat({ chatThreads: nextThreads, activeChatThreadId: nextActiveId })
+
+      const ed = editorRef.current
+      if (ed && !reviewActiveRef.current && deletingActive) {
+        const thread = nextThreads.find((t) => t.id === nextActiveId)
+        if (thread?.passage) highlightPassageInEditor(ed, thread)
+        else clearReferenceHighlightIn(ed)
+      }
+    },
+    [updateActiveTabChat]
+  )
+
   useEffect(() => {
     if (useStore.persist.hasHydrated()) {
       setHydrated(true)
@@ -1251,9 +1281,10 @@ INSTRUCTION: ${instruction}`
               {chatThreads.length > 0 && (
                 <div className="assistant-thread-bar">
                   {chatThreads.map((thread) => (
-                    <button
+                    <div
                       key={thread.id}
-                      type="button"
+                      role="tab"
+                      aria-selected={thread.id === activeChatThreadId}
                       className={`assistant-thread-pill${thread.id === activeChatThreadId ? ' active' : ''}`}
                       onClick={() => switchChatThread(thread.id)}
                       title={
@@ -1262,8 +1293,20 @@ INSTRUCTION: ${instruction}`
                           : thread.label
                       }
                     >
-                      {thread.label}
-                    </button>
+                      <span className="assistant-thread-pill-label">{thread.label}</span>
+                      <button
+                        type="button"
+                        className="assistant-thread-pill-close"
+                        title="Delete chat"
+                        aria-label={`Delete ${thread.label}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          deleteChatThread(thread.id)
+                        }}
+                      >
+                        <X size={9} />
+                      </button>
+                    </div>
                   ))}
                   <button
                     type="button"
