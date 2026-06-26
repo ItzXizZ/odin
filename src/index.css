@@ -762,6 +762,84 @@
 }
 
 /* ============================================================
+   WRITE MODE — welcome / empty state
+   ============================================================ */
+.write-welcome {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  pointer-events: none;
+}
+
+.write-welcome-inner {
+  max-width: 30rem;
+  width: 100%;
+  text-align: center;
+}
+
+.write-welcome-logo {
+  height: 3.75rem;
+  width: auto;
+  display: block;
+  margin: 0 auto 1.25rem;
+  opacity: 0.9;
+}
+
+.write-welcome-title {
+  font-family: 'Inter', sans-serif;
+  font-size: 1.85rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: rgba(35, 35, 35, 0.92);
+}
+
+.write-welcome-sub {
+  margin-top: 0.55rem;
+  font-size: 0.97rem;
+  line-height: 1.55;
+  color: rgba(60, 60, 60, 0.62);
+}
+
+.write-welcome-modes {
+  margin-top: 1.65rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  text-align: left;
+}
+
+.write-welcome-modes > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  padding: 0.7rem 0.9rem;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 0.75rem;
+}
+
+.write-welcome-modes strong {
+  font-size: 0.85rem;
+  font-weight: 650;
+  color: rgba(35, 35, 35, 0.9);
+}
+
+.write-welcome-modes span {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: rgba(60, 60, 60, 0.6);
+}
+
+.write-welcome-hint {
+  margin-top: 1.5rem;
+  font-size: 0.8rem;
+  color: rgba(60, 60, 60, 0.48);
+}
+
+/* ============================================================
    GLASS NAVIGATION — pill bar with sliding active highlight
    ============================================================ */
 .nav-wrap {
