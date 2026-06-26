@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FileText, Plus, Trash2 } from 'lucide-react'
+import { FileText, Plus, Trash2, X } from 'lucide-react'
 import { useStore, type WritingDocument } from '../../store/useStore'
 
 function docPreview(doc: WritingDocument): string {
@@ -14,7 +14,7 @@ function wordCount(doc: WritingDocument): number {
   return text.split(/\s+/).filter(Boolean).length
 }
 
-export default function DocumentsMode() {
+export default function DocumentsMode({ onClose }: { onClose?: () => void }) {
   const {
     documents,
     activeDocumentId,
@@ -22,7 +22,6 @@ export default function DocumentsMode() {
     deleteDocument,
     setActiveDocumentId,
     setDocumentTitle,
-    setActiveTab,
   } = useStore()
 
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -30,12 +29,12 @@ export default function DocumentsMode() {
 
   const openDocument = (id: string) => {
     setActiveDocumentId(id)
-    setActiveTab('write')
+    onClose?.()
   }
 
   const handleNew = () => {
     createDocument()
-    setActiveTab('write')
+    onClose?.()
   }
 
   const startRename = (doc: WritingDocument) => {
@@ -72,10 +71,22 @@ export default function DocumentsMode() {
             <h1 className="font-caveat text-3xl font-bold text-white">Documents</h1>
             <p className="mt-1 text-sm text-white/40">All your writing projects in one place</p>
           </div>
+          <div className="flex items-center gap-2">
           <button type="button" onClick={handleNew} className="doc-library-new-btn">
             <Plus size={14} />
             New document
           </button>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-white/50 transition hover:bg-white/10 hover:text-white/80"
+              title="Close (Esc)"
+            >
+              <X size={16} />
+            </button>
+          )}
+          </div>
         </div>
       </div>
 

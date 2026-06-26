@@ -1,6 +1,7 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, createJSONStorage } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
+import { workspaceStorage } from '../lib/workspaceStorage'
 import type { Node, Edge } from 'reactflow'
 import type { SourceRef } from '../lib/sources'
 import {
@@ -14,13 +15,17 @@ import {
   type StyleActivation,
 } from '../lib/style'
 
-export type AppTab = 'context' | 'documents' | 'stream' | 'exploration' | 'write' | 'stylism' | 'grade'
+export type AppTab = 'stream' | 'exploration' | 'write' | 'stylism' | 'grade'
+
+import type { WriteChatThread } from '../components/WriteMode/chatThreads'
 
 /** A sub-document within a writing project, like Google Docs tabs. */
 export interface DocTab {
   id: string
   name: string
   content: string
+  chatThreads?: WriteChatThread[]
+  activeChatThreadId?: string | null
 }
 
 export interface ContextConversation {
@@ -93,6 +98,7 @@ export interface PDFDocument {
   text: string
   pages: number
   summary?: string
+  thumbnail?: string
   uploadedAt: number
 }
 
@@ -133,7 +139,7 @@ export interface ExplorationNodeData {
   response: string
   isLoading?: boolean
   /** When set, the node is optimized for visual output (user asked for an image). */
-  nodeKind?: 'text' | 'visual'
+  nodeKind?: 'text' | 'visual' | 'embed'
   /** Generated or adapted visual for this node. */
   visual?: VisualAsset
   /** Status message while a visual is being prepared. */
@@ -154,6 +160,10 @@ export interface ExplorationNodeData {
   onReplyFull?: () => void
   /** Transient: this node is the target for a full-message reply (not persisted). */
   isReplyTarget?: boolean
+  /** URL to embed when nodeKind === 'embed'. */
+  embedUrl?: string
+  /** Transient callback injected by ExplorationMode — not persisted. */
+  onLinkClick?: (url: string, x: number, y: number, linkText?: string) => void
 }
 
 export interface Takeaway {
@@ -170,6 +180,8 @@ export interface Adventure {
   nodes: Node<ExplorationNodeData>[]
   edges: Edge[]
   takeaways: Takeaway[]
+  /** Captured board screenshot (data URL) – set by ExplorationMode on save. */
+  thumbnail?: string
 }
 
 function makeAdventure(name: string): Adventure {
@@ -333,6 +345,7 @@ interface AppState {
   createAdventure: (name?: string) => string
   deleteAdventure: (id: string) => void
   renameAdventure: (id: string, name: string) => void
+  setAdventureThumbnail: (id: string, thumbnail: string) => void
   setActiveAdventureId: (id: string) => void
   setLiveSourceContext: (text: string) => void
 
@@ -347,6 +360,10 @@ interface AppState {
   renameDocTab: (tabId: string, name: string) => void
   setActiveDocTab: (tabId: string) => void
   getActiveTab: () => DocTab | null
+  updateActiveTabChat: (updates: {
+    chatThreads?: WriteChatThread[]
+    activeChatThreadId?: string | null
+  }) => void
   setWritingPrompt: (prompt: string) => void
   setHighlightedText: (text: string) => void
   setStyleRules: (rules: StyleRule[]) => void
@@ -375,7 +392,7 @@ export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
       activeTab: 'context',
-      apiKey: '',
+      apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY ?? '',
       showSettings: false,
 
       sessions: [],
@@ -527,6 +544,10 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
         set((s) => ({
           adventures: s.adventures.map((a) => (a.id === id ? { ...a, name: name.trim() || a.name } : a)),
         })),
+      setAdventureThumbnail: (id, thumbnail) =>
+        set((s) => ({
+          adventures: s.adventures.map((a) => (a.id === id ? { ...a, thumbnail } : a)),
+        })),
       setActiveAdventureId: (id) =>
         set((s) => (s.adventures.some((a) => a.id === id) ? { activeAdventureId: id } : s)),
       setLiveSourceContext: (text) => set({ liveSourceContext: text }),
@@ -603,6 +624,24 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
         if (!doc) return null
         return doc.tabs.find((t) => t.id === doc.activeTabId) ?? doc.tabs[0] ?? null
       },
+      updateActiveTabChat: (updates) =>
+        set((s) => ({
+          documents: patchActiveDoc(s, (d) => ({
+            ...d,
+            tabs: d.tabs.map((t) =>
+              t.id === d.activeTabId
+                ? {
+                    ...t,
+                    chatThreads: updates.chatThreads ?? t.chatThreads,
+                    activeChatThreadId:
+                      updates.activeChatThreadId !== undefined
+                        ? updates.activeChatThreadId
+                        : t.activeChatThreadId,
+                  }
+                : t
+            ),
+          })),
+        })),
       setWritingPrompt: (prompt) => set({ writingPrompt: prompt }),
       setHighlightedText: (text) => set({ highlightedText: text }),
       setStyleRules: (rules) => set({ styleRules: rules }),
@@ -769,9 +808,27 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
     }),
     {
       name: 'scribe-storage',
-      version: 6,
+      version: 7,
+      // Hydration is deferred to the auth layer so we load the *correct* user's
+      // data once their identity is known (see AuthProvider).
+      skipHydration: true,
+      storage: createJSONStorage(() => workspaceStorage),
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>
+        if (version < 7 && Array.isArray(state.documents)) {
+          state.documents = (state.documents as Record<string, unknown>[]).map((d) => {
+            const tabs = d.tabs as DocTab[] | undefined
+            if (!Array.isArray(tabs)) return d
+            return {
+              ...d,
+              tabs: tabs.map((t) => ({
+                ...t,
+                chatThreads: t.chatThreads ?? [],
+                activeChatThreadId: t.activeChatThreadId ?? null,
+              })),
+            }
+          })
+        }
         if (version < 6) {
           const legacyPdfs = (state.pdfs as PDFDocument[]) ?? []
           const legacyImages = (state.images as ImageDocument[]) ?? []
@@ -862,19 +919,8 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
         return persisted
       },
       partialize: (s) => ({
-        apiKey: s.apiKey,
         sessions: s.sessions,
-        documents: s.documents.map((d) => ({
-          ...d,
-          context: {
-            ...d.context,
-            pdfs: d.context.pdfs.map((p) => ({ ...p, text: p.text.slice(0, 8000) })),
-            images: d.context.images.map((i) => ({
-              ...i,
-              dataUrl: i.dataUrl.length > 600000 ? '' : i.dataUrl,
-            })),
-          },
-        })),
+        documents: s.documents,
         activeDocumentId: s.activeDocumentId,
         styleRules: s.styleRules,
         styleConnections: s.styleConnections,

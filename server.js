@@ -5,6 +5,14 @@ import multer from 'multer'
 import { createRequire } from 'module'
 import dotenv from 'dotenv'
 import { generateVisualAsset, proxyImage, decideExplorationAction } from './server/visual.js'
+import {
+  isSupabaseConfigured,
+  ensureBuckets,
+  getWorkspaceState,
+  putWorkspaceState,
+  uploadAsset,
+  getUserFromToken,
+} from './server/supabase.js'
 
 dotenv.config()
 
@@ -15,7 +23,7 @@ const app = express()
 const PORT = process.env.PORT || 3001
 
 app.use(cors({ origin: 'http://localhost:5173' }))
-app.use(express.json({ limit: '10mb' }))
+app.use(express.json({ limit: '30mb' }))
 
 const upload = multer({ limits: { fileSize: 20 * 1024 * 1024 } })
 
@@ -25,6 +33,21 @@ function getClient(apiKey) {
   return new Anthropic({ apiKey: key })
 }
 
+/**
+ * Resolve the user making a persistence request from their bearer token.
+ *  - With a valid token → that user's id (data is scoped to them).
+ *  - With no token → 'default' (legacy/local mode for setups without auth).
+ *  - With an invalid/expired token → { error } so the caller can return 401.
+ */
+async function resolveUserId(req) {
+  const header = req.headers['authorization'] || ''
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null
+  if (!token) return { userId: 'default' }
+  const user = await getUserFromToken(token)
+  if (!user) return { error: 'Invalid or expired session' }
+  return { userId: user.id }
+}
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({
@@ -32,6 +55,7 @@ app.get('/api/health', (req, res) => {
     hasKey: !!process.env.ANTHROPIC_API_KEY,
     hasResearch: !!(process.env.TAVILY_API_KEY),
     hasImageGen: !!(process.env.OPENAI_API_KEY || process.env.GOOGLE_API_KEY || process.env.REPLICATE_API_KEY),
+    hasSupabase: isSupabaseConfigured(),
     imageProvider: process.env.OPENAI_API_KEY
       ? 'openai'
       : process.env.GOOGLE_API_KEY
@@ -333,10 +357,135 @@ app.post('/api/upload-pdf', upload.single('file'), async (req, res) => {
   }
 })
 
-app.listen(PORT, () => {
+// Check whether a URL allows iframe embedding by inspecting its response headers.
+// We make a HEAD request (fallback to GET with Range) from the server side so we
+// bypass browser CORS restrictions. Returns { embeddable: boolean, reason?: string }.
+app.get('/api/can-embed', async (req, res) => {
+  const { url } = req.query
+  if (!url || typeof url !== 'string') {
+    return res.json({ embeddable: false, reason: 'no url' })
+  }
+
+  let parsedUrl
+  try {
+    parsedUrl = new URL(url)
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      return res.json({ embeddable: false, reason: 'unsupported protocol' })
+    }
+  } catch {
+    return res.json({ embeddable: false, reason: 'invalid url' })
+  }
+
+  const checkHeaders = (headers) => {
+    const xfo = (headers.get('x-frame-options') || '').trim().toUpperCase()
+    const csp = headers.get('content-security-policy') || ''
+    if (xfo === 'DENY' || xfo === 'SAMEORIGIN') {
+      return { embeddable: false, reason: `X-Frame-Options: ${xfo}` }
+    }
+    // CSP frame-ancestors 'none' or 'self' (without wildcards) blocks embedding
+    const faMatch = csp.match(/frame-ancestors\s+([^;]+)/i)
+    if (faMatch) {
+      const dirs = faMatch[1].trim().toLowerCase()
+      if (dirs === "'none'" || dirs === 'none') {
+        return { embeddable: false, reason: "CSP frame-ancestors 'none'" }
+      }
+      if (dirs === "'self'" || dirs === 'self') {
+        return { embeddable: false, reason: "CSP frame-ancestors 'self'" }
+      }
+    }
+    return { embeddable: true }
+  }
+
+  const fetchOpts = {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml,*/*',
+    },
+    redirect: 'follow',
+  }
+
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 6000)
+
+    let response
+    try {
+      response = await fetch(url, { method: 'HEAD', signal: controller.signal, ...fetchOpts })
+    } catch {
+      // Some servers reject HEAD — retry with GET + early abort via Range
+      response = await fetch(url, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: { ...fetchOpts.headers, Range: 'bytes=0-0' },
+        redirect: 'follow',
+      })
+    }
+    clearTimeout(timer)
+
+    return res.json(checkHeaders(response.headers))
+  } catch (err) {
+    // Network/timeout — assume embeddable so the user can still try
+    return res.json({ embeddable: true, reason: 'unreachable' })
+  }
+})
+
+// ── Supabase-backed cloud persistence ──
+
+// Load the signed-in user's workspace state blob.
+app.get('/api/workspace', async (req, res) => {
+  if (!isSupabaseConfigured()) return res.status(501).json({ error: 'Supabase not configured' })
+  const { userId, error } = await resolveUserId(req)
+  if (error) return res.status(401).json({ error })
+  try {
+    const value = await getWorkspaceState(userId)
+    res.json({ value })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Save the signed-in user's workspace state blob.
+app.put('/api/workspace', async (req, res) => {
+  if (!isSupabaseConfigured()) return res.status(501).json({ error: 'Supabase not configured' })
+  const { userId, error } = await resolveUserId(req)
+  if (error) return res.status(401).json({ error })
+  const { value } = req.body || {}
+  if (typeof value !== 'string') return res.status(400).json({ error: 'Missing string "value"' })
+  try {
+    await putWorkspaceState(userId, value)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Upload a binary asset (image / thumbnail / generated visual) and return its public URL.
+app.post('/api/storage/upload', async (req, res) => {
+  if (!isSupabaseConfigured()) return res.status(501).json({ error: 'Supabase not configured' })
+  const { userId, error } = await resolveUserId(req)
+  if (error) return res.status(401).json({ error })
+  const { dataUrl, base64, contentType, name } = req.body || {}
+  if (!dataUrl && !base64) return res.status(400).json({ error: 'Missing "dataUrl" or "base64"' })
+  try {
+    const url = await uploadAsset({ dataUrl, base64, contentType, name, userId })
+    res.json({ url })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.listen(PORT, async () => {
+  if (isSupabaseConfigured()) {
+    try {
+      await ensureBuckets()
+    } catch (err) {
+      console.warn('  Supabase bucket setup warning:', err.message)
+    }
+  }
   console.log(`\n  Odin API server running on http://localhost:${PORT}`)
   console.log(`  API key: ${process.env.ANTHROPIC_API_KEY ? '✓ loaded from .env' : '✗ not set (use in-app settings)'}`)
   console.log(`  Research: ${process.env.TAVILY_API_KEY ? '✓ Tavily' : '○ DuckDuckGo fallback (set TAVILY_API_KEY for better results)'}`)
   console.log(`  Image gen: ${process.env.OPENAI_API_KEY ? '✓ GPT Image (gpt-image-1)' : process.env.GOOGLE_API_KEY ? '✓ Gemini Imagen' : process.env.REPLICATE_API_KEY ? '✓ Flux Pro' : '○ PubChem + web photos only (add OPENAI_API_KEY for best quality)'}`)
+  console.log(`  Cloud sync: ${isSupabaseConfigured() ? '✓ Supabase (state + assets)' : '○ localStorage only (set SUPABASE_URL + SUPABASE_SECRET_KEY)'}`)
   console.log(`\n  Frontend: http://localhost:5173\n`)
 })

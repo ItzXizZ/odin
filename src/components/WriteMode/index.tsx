@@ -8,13 +8,13 @@ import TextAlign from '@tiptap/extension-text-align'
 import {
   Bold, Italic, UnderlineIcon, AlignLeft, AlignCenter, AlignRight,
   Check, X, Loader2, Undo2, Redo2, Crosshair,
-  Plus, PanelRightClose, PanelRightOpen,
+  Plus, PanelRightClose, PanelRightOpen, LayoutGrid, Inbox,
 } from 'lucide-react'
 import { diffWords } from 'diff'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useStore } from '../../store/useStore'
 import { streamChat } from '../../lib/claude'
-import { compileStyleGuide, buildEditSystemPrompt, parseEdits, applyEdits } from '../../lib/style'
+import { compileStyleGuide, buildAgentSystemPrompt, parseEditResponse, parseAgentResponse, applyEdits, type ParsedEdit } from '../../lib/style'
 import {
   runStyleAgentTurn,
   runConflictResolutionTurn,
@@ -31,9 +31,40 @@ import {
 } from '../../lib/aiText'
 import { diffToHtml } from './diffHtml'
 import TunnelVision from './TunnelVision'
+import DocumentsMode from '../DocumentsMode'
+import ContextHouse from '../ContextHouse'
+import {
+  ensureTabChatState,
+  createChatThread,
+  type WriteChatMessage,
+  type WriteChatThread,
+} from './chatThreads'
+import logo from '../logo.png'
 
 /** Highlight color marking the passage currently attached to the assistant. */
 const REF_HIGHLIGHT_COLOR = '#ffe690'
+
+/**
+ * Render chat message text with inline bold/italic support.
+ * Converts **bold** and *italic* markers to React elements while
+ * preserving whitespace. No block-level markdown (no lists, headings, etc.).
+ */
+function InlineMd({ text }: { text: string }) {
+  const parts = text.split(/(\*\*[^*\n]+\*\*|\*[^*\n]+\*)/g)
+  return (
+    <span className="whitespace-pre-wrap">
+      {parts.map((part, i) => {
+        if (part.startsWith('**') && part.endsWith('**')) {
+          return <strong key={i}>{part.slice(2, -2)}</strong>
+        }
+        if (part.startsWith('*') && part.endsWith('*')) {
+          return <em key={i}>{part.slice(1, -1)}</em>
+        }
+        return <span key={i}>{part}</span>
+      })}
+    </span>
+  )
+}
 
 interface AISuggestion {
   id: string
@@ -50,13 +81,82 @@ interface ReviewState {
   stackedIds: string[]
 }
 
-interface ChatEntry {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  suggestionId?: string
-  /** Messages from the Stylism network curator (conflicts, confirmations). */
-  kind?: 'style'
+interface ChatEntry extends WriteChatMessage {}
+
+function buildEditFallbackMessage(edits: ParsedEdit[]): string {
+  if (edits.length === 0) {
+    return "I looked it over and didn't find anything worth changing — your wording already holds up."
+  }
+  const describe = (e: ParsedEdit) => {
+    if (!e.find && e.replace) return `added "${e.replace.slice(0, 48)}${e.replace.length > 48 ? '…' : ''}"`
+    if (e.find && !e.replace) return `cut "${e.find.slice(0, 48)}${e.find.length > 48 ? '…' : ''}"`
+    return `swapped "${e.find.slice(0, 32)}${e.find.length > 32 ? '…' : ''}" for "${e.replace.slice(0, 32)}${e.replace.length > 32 ? '…' : ''}"`
+  }
+  const preview = edits.slice(0, 2).map(describe).join('; ')
+  const tail = edits.length > 2 ? ` — plus ${edits.length - 2} more tweak${edits.length - 2 === 1 ? '' : 's'}.` : '.'
+  return `I made ${edits.length} edit${edits.length === 1 ? '' : 's'}: ${preview}${tail} You can accept or reject each one inline.`
+}
+
+/** Re-apply the yellow attachment highlight for a passage thread. */
+function highlightPassageInEditor(ed: Editor, thread: WriteChatThread) {
+  if (!thread.passage) return
+  clearReferenceHighlightIn(ed)
+  const normalized = thread.passage.replace(/\s+/g, ' ').trim()
+  if (
+    thread.passageFrom != null &&
+    thread.passageTo != null &&
+    thread.passageTo > thread.passageFrom
+  ) {
+    const current = ed.state.doc.textBetween(thread.passageFrom, thread.passageTo, ' ')
+    if (current.replace(/\s+/g, ' ').trim() === normalized) {
+      ed.chain()
+        .setTextSelection({ from: thread.passageFrom, to: thread.passageTo })
+        .setHighlight({ color: REF_HIGHLIGHT_COLOR })
+        .setTextSelection(thread.passageTo)
+        .run()
+      return
+    }
+  }
+  const docText = ed.state.doc.textContent.replace(/\s+/g, ' ')
+  const idx = docText.indexOf(normalized)
+  if (idx === -1) return
+  let charCount = 0
+  let from = -1
+  let to = -1
+  ed.state.doc.descendants((node, pos) => {
+    if (!node.isText || from !== -1) return
+    const text = node.text ?? ''
+    const nodeStart = charCount
+    charCount += text.length
+    if (from === -1 && idx >= nodeStart && idx < charCount) {
+      from = pos + (idx - nodeStart)
+      to = from + normalized.length
+    }
+  })
+  if (from !== -1 && to > from) {
+    ed.chain()
+      .setTextSelection({ from, to })
+      .setHighlight({ color: REF_HIGHLIGHT_COLOR })
+      .setTextSelection(to)
+      .run()
+  }
+}
+
+function parseDraftResponse(raw: string): { content: string; message?: string } | null {
+  let text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+  const first = text.indexOf('{')
+  const last = text.lastIndexOf('}')
+  if (first === -1 || last <= first) return null
+  try {
+    const obj = JSON.parse(text.slice(first, last + 1))
+    if (typeof obj.content !== 'string' || !obj.content.trim()) return null
+    return {
+      content: obj.content.trim(),
+      message: typeof obj.message === 'string' ? obj.message.trim() : undefined,
+    }
+  } catch {
+    return null
+  }
 }
 
 interface SelectionMenu {
@@ -123,6 +223,7 @@ export default function WriteMode() {
     documents, activeDocumentId, apiKey, getFullContext,
     setDocumentContent, setDocumentTitle,
     addDocTab, deleteDocTab, renameDocTab, setActiveDocTab,
+    updateActiveTabChat,
     styleRules,
     reinforceStyleRules, addStyleRule, editStyleRule, deleteStyleRule,
   } = useStore()
@@ -137,13 +238,13 @@ export default function WriteMode() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [suggestions, setSuggestions] = useState<AISuggestion[]>([])
   const [review, setReview] = useState<ReviewState | null>(null)
-  const [chat, setChat] = useState<ChatEntry[]>([])
   const [wordCount, setWordCount] = useState(0)
-  const [attachedSelection, setAttachedSelection] = useState('')
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenu | null>(null)
   const [tunnel, setTunnel] = useState<TunnelState | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(true)
+  const [showDocLibrary, setShowDocLibrary] = useState(false)
+  const [showContextHouse, setShowContextHouse] = useState(false)
   const [renamingTab, setRenamingTab] = useState<{ id: string; value: string } | null>(null)
 
   const skipEmptySaveRef = useRef(true)
@@ -154,9 +255,44 @@ export default function WriteMode() {
   reviewStateRef.current = review
   const finishReviewRef = useRef<() => void>(() => {})
   const chatStateRef = useRef<ChatEntry[]>([])
-  chatStateRef.current = chat
   /** An unresolved Stylism rule conflict; the writer's next message resolves it. */
   const pendingConflictRef = useRef<{ ruleId: string; question: string } | null>(null)
+
+  const activeTabData = docTabs.find((t) => t.id === activeTabId) ?? null
+  const { threads: chatThreads, activeId: activeChatThreadId } = ensureTabChatState(activeTabData)
+  const activeChatThread = chatThreads.find((t) => t.id === activeChatThreadId) ?? chatThreads[0]
+  const chat = activeChatThread?.messages ?? []
+  const attachedSelection = activeChatThread?.passage ?? ''
+  chatStateRef.current = chat
+
+  const updateThreadMessages = useCallback(
+    (updater: (prev: ChatEntry[]) => ChatEntry[]) => {
+      const tab = useStore.getState().getActiveTab()
+      const { threads, activeId } = ensureTabChatState(tab)
+      const nextThreads = threads.map((t) =>
+        t.id === activeId
+          ? { ...t, messages: updater(t.messages), updatedAt: Date.now() }
+          : t
+      )
+      updateActiveTabChat({ chatThreads: nextThreads, activeChatThreadId: activeId })
+    },
+    [updateActiveTabChat]
+  )
+
+  const switchChatThread = useCallback(
+    (threadId: string) => {
+      const tab = useStore.getState().getActiveTab()
+      const { threads } = ensureTabChatState(tab)
+      updateActiveTabChat({ chatThreads: threads, activeChatThreadId: threadId })
+      const thread = threads.find((t) => t.id === threadId)
+      const ed = editorRef.current
+      if (ed && !reviewActiveRef.current) {
+        if (thread?.passage) highlightPassageInEditor(ed, thread)
+        else clearReferenceHighlightIn(ed)
+      }
+    },
+    [updateActiveTabChat]
+  )
 
   useEffect(() => {
     if (useStore.persist.hasHydrated()) {
@@ -165,6 +301,15 @@ export default function WriteMode() {
     }
     return useStore.persist.onFinishHydration(() => setHydrated(true))
   }, [])
+
+  useEffect(() => {
+    if (!hydrated) return
+    const tab = useStore.getState().getActiveTab()
+    if (tab && !tab.chatThreads?.length) {
+      const docThread = createChatThread([])
+      updateActiveTabChat({ chatThreads: [docThread], activeChatThreadId: docThread.id })
+    }
+  }, [hydrated, activeDocumentId, activeTabId, updateActiveTabChat])
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -240,8 +385,11 @@ export default function WriteMode() {
     editor.commands.setContent(tab?.content ?? '', false)
     skipEmptySaveRef.current = false
     setWordCount(editor.getText().split(/\s+/).filter(Boolean).length)
-    setAttachedSelection('')
     setSelectionMenu(null)
+    const { threads, activeId } = ensureTabChatState(tab)
+    const thread = threads.find((t) => t.id === activeId)
+    if (thread?.passage) highlightPassageInEditor(editor, thread)
+    else clearReferenceHighlightIn(editor)
   }, [activeKey, editor, hydrated])
 
   useEffect(() => {
@@ -290,29 +438,30 @@ export default function WriteMode() {
     }
   }, [editor])
 
+  useEffect(() => {
+    if (showDocLibrary || showContextHouse) setSelectionMenu(null)
+  }, [showDocLibrary, showContextHouse])
+
   /* ── Attachment reference highlight ──
      When a passage is attached to the assistant, it stays visibly highlighted
      in the editor so the writer always knows what they're referencing. */
   const attachSelection = useCallback((text: string, from?: number, to?: number) => {
-    const ed = editorRef.current
-    if (ed && !reviewActiveRef.current) {
-      clearReferenceHighlightIn(ed)
-      if (from != null && to != null && to > from) {
-        ed.chain()
-          .setTextSelection({ from, to })
-          .setHighlight({ color: REF_HIGHLIGHT_COLOR })
-          .setTextSelection(to)
-          .run()
-      }
-    }
-    setAttachedSelection(text)
-  }, [])
+    const tab = useStore.getState().getActiveTab()
+    const { threads, activeId } = ensureTabChatState(tab)
 
-  const detachSelection = useCallback(() => {
+    const nextThreads = threads.map((t) =>
+      t.id === activeId
+        ? { ...t, passage: text, passageFrom: from, passageTo: to, updatedAt: Date.now() }
+        : t
+    )
+    updateActiveTabChat({ chatThreads: nextThreads, activeChatThreadId: activeId })
+
     const ed = editorRef.current
-    if (ed && !reviewActiveRef.current) clearReferenceHighlightIn(ed)
-    setAttachedSelection('')
-  }, [])
+    const thread = nextThreads.find((t) => t.id === activeId)
+    if (ed && thread && !reviewActiveRef.current) {
+      highlightPassageInEditor(ed, thread)
+    }
+  }, [updateActiveTabChat])
 
   /* ── Finalize a review once all hunks are resolved ── */
   const finishReview = useCallback(() => {
@@ -330,7 +479,10 @@ export default function WriteMode() {
     setDocumentContent(html)
     setWordCount(ed.getText().split(/\s+/).filter(Boolean).length)
     setReview(null)
-    setAttachedSelection('')
+    const tab = useStore.getState().getActiveTab()
+    const { threads, activeId } = ensureTabChatState(tab)
+    const thread = threads.find((t) => t.id === activeId)
+    if (thread?.passage) highlightPassageInEditor(ed, thread)
   }, [setDocumentContent])
 
   useEffect(() => {
@@ -338,7 +490,7 @@ export default function WriteMode() {
   }, [finishReview])
 
   const enterReview = useCallback(
-    (currentText: string, newText: string, instruction: string) => {
+    (currentText: string, newText: string, instruction: string, assistantMessage?: string, edits?: ParsedEdit[]) => {
       const ed = editorRef.current
       if (!ed) return
       const diff = diffWords(currentText, newText) as DiffChange[]
@@ -362,19 +514,27 @@ export default function WriteMode() {
         ...prev.slice(0, 9),
       ])
       setReview({ suggestionId: id, instruction, diff, stackedIds })
-      setChat((prev) => [
-        ...prev,
-        {
-          id,
-          role: 'assistant',
-          content: `Proposed ${diff.filter((d) => d.added || d.removed).length} change${
-            diff.filter((d) => d.added || d.removed).length === 1 ? '' : 's'
-          }. Review them inline.`,
-          suggestionId: id,
-        },
-      ])
+
+      const tab = useStore.getState().getActiveTab()
+      const { threads, activeId } = ensureTabChatState(tab)
+      const message =
+        assistantMessage?.trim() ||
+        (edits ? buildEditFallbackMessage(edits) : 'Here are the edits — accept or reject each one inline.')
+      const nextThreads = threads.map((t) =>
+        t.id === activeId
+          ? {
+              ...t,
+              messages: [
+                ...t.messages,
+                { id, role: 'assistant' as const, content: message, suggestionId: id },
+              ],
+              updatedAt: Date.now(),
+            }
+          : t
+      )
+      updateActiveTabChat({ chatThreads: nextThreads, activeChatThreadId: activeId })
     },
-    []
+    [updateActiveTabChat]
   )
 
   const acceptAll = useCallback(() => {
@@ -400,11 +560,11 @@ export default function WriteMode() {
   /* ── Stylism network maintenance ── */
 
   const postStyleMessage = useCallback((content: string) => {
-    setChat((prev) => [
+    updateThreadMessages((prev) => [
       ...prev,
       { id: `style-${Date.now()}`, role: 'assistant', content, kind: 'style' },
     ])
-  }, [])
+  }, [updateThreadMessages])
 
   const applyStyleActions = useCallback(
     (actions: StyleAgentAction[]): string[] => {
@@ -514,7 +674,7 @@ export default function WriteMode() {
 
     const instruction = aiPrompt.trim()
     const userEntryId = Date.now().toString()
-    setChat((prev) => [...prev, { id: userEntryId, role: 'user', content: instruction }])
+    updateThreadMessages((prev) => [...prev, { id: userEntryId, role: 'user', content: instruction }])
     setAiPrompt('')
     setIsStreaming(true)
 
@@ -530,11 +690,27 @@ export default function WriteMode() {
     const passage = attachedSelection
     const isEmptyDoc = currentText.trim().length === 0
 
+    const historyForApi = chatStateRef.current
+      .filter((m) => m.kind !== 'style' && m.id !== userEntryId)
+      .slice(-10)
+      .map((m) => ({ role: m.role, content: m.content }))
+
     const system = isEmptyDoc
-      ? `You are an expert writing assistant. Write the content the writer asks for as clean prose (paragraphs separated by blank lines). Return ONLY the prose — no commentary, no JSON, no code fences, and no Markdown (# headings, **bold**, bullet lists, or similar symbols).
+      ? `You are an expert writing assistant helping a writer draft prose. Be conversational and helpful.
+
+Return ONLY a JSON object, no code fences:
+{"message":"<one short sentence — what you wrote and why>","content":"<clean prose, paragraphs separated by blank lines>"}
+
+The "message" is shown in chat: one sentence, direct, no lists, no em dashes, no bold. Speak like a human, not an AI status report.
+JSON safety: never put a literal newline inside a string value — use \\n if needed.
+Write plain prose only in "content" — no Markdown symbols.
 
 ${styleGuide ? styleGuide + '\n\n' : ''}${context ? `=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : ''}`
-      : buildEditSystemPrompt({ context, styleGuide, scope: 'document' })
+      : buildAgentSystemPrompt({
+          context,
+          styleGuide,
+          scope: passage ? 'passage' : 'document',
+        })
 
     const user = isEmptyDoc
       ? `The document is empty.\n\nINSTRUCTION: ${instruction}`
@@ -544,14 +720,14 @@ ${currentText.slice(0, 8000)}
 """
 ${
   passage
-    ? `\nFOCUS ONLY ON THIS PASSAGE (edit within it, leave everything else untouched):\n"""${passage.slice(0, 2000)}"""\n`
+    ? `\nSELECTED PASSAGE:\n"""${passage.slice(0, 2000)}"""\nFor edits: work within this passage. For created content: it will be inserted after this passage.\n`
     : ''
 }
 INSTRUCTION: ${instruction}`
 
     let raw = ''
     await streamChat(
-      [{ role: 'user', content: user }],
+      [...historyForApi, { role: 'user', content: user }],
       system,
       apiKey,
       (chunk) => {
@@ -560,45 +736,124 @@ INSTRUCTION: ${instruction}`
       () => {
         setIsStreaming(false)
         raw = normalizeAiResponse(raw)
+
+        // Empty-doc draft path (unchanged).
         if (isEmptyDoc) {
-          const generated = raw.trim()
+          const drafted = parseDraftResponse(raw)
+          const generated = drafted?.content ?? raw.trim()
           if (!generated) {
-            setChat((prev) => [
+            updateThreadMessages((prev) => [
               ...prev,
               { id: (Date.now() + 1).toString(), role: 'assistant', content: 'Nothing was generated — try again.' },
             ])
             return
           }
-          enterReview(baseText, generated, instruction)
+          enterReview(baseText, generated, instruction, drafted?.message)
           return
         }
-        const edits = parseEdits(raw)
+
+        // Agentic path: parse type-discriminated response.
+        const agentResp = parseAgentResponse(raw)
+
+        if (agentResp) {
+          if (agentResp.type === 'chat') {
+            // Pure conversational reply — no doc changes.
+            updateThreadMessages((prev) => [
+              ...prev,
+              { id: (Date.now() + 1).toString(), role: 'assistant', content: agentResp.message },
+            ])
+            return
+          }
+
+          if (agentResp.type === 'create') {
+            // Generate new content and append it (or insert after selected passage).
+            let newText: string
+            if (passage) {
+              const passageIdx = currentText.indexOf(passage)
+              if (passageIdx !== -1) {
+                const insertPos = passageIdx + passage.length
+                newText = currentText.slice(0, insertPos) + '\n\n' + agentResp.content + currentText.slice(insertPos)
+              } else {
+                newText = currentText + '\n\n' + agentResp.content
+              }
+            } else {
+              newText = currentText + '\n\n' + agentResp.content
+            }
+            enterReview(baseText, newText, instruction, agentResp.message)
+            return
+          }
+
+          if (agentResp.type === 'edit') {
+            if (agentResp.edits.length === 0) {
+              updateThreadMessages((prev) => [
+                ...prev,
+                {
+                  id: (Date.now() + 1).toString(),
+                  role: 'assistant',
+                  content: agentResp.message?.trim() || 'No changes needed — your text already works here.',
+                },
+              ])
+              return
+            }
+            const newText = applyEdits(currentText, agentResp.edits).text
+            if (!newText.trim() || newText.trim() === currentText.trim()) {
+              updateThreadMessages((prev) => [
+                ...prev,
+                {
+                  id: (Date.now() + 1).toString(),
+                  role: 'assistant',
+                  content: agentResp.message?.trim() || 'No changes needed — your text already works here.',
+                },
+              ])
+              return
+            }
+            enterReview(baseText, newText, instruction, agentResp.message, agentResp.edits)
+            return
+          }
+        }
+
+        // Fallback: model didn't use the agentic protocol — try legacy edit parse,
+        // then treat raw output as a full replacement.
+        const parsed = parseEditResponse(raw)
         let newText: string
-        if (edits && edits.length > 0) {
-          newText = applyEdits(currentText, edits).text
-        } else if (edits && edits.length === 0) {
-          setChat((prev) => [
-            ...prev,
-            { id: (Date.now() + 1).toString(), role: 'assistant', content: 'No changes needed — your text already works here.' },
-          ])
-          return
+        let assistantMessage: string | undefined
+        let appliedEdits: ParsedEdit[] | undefined
+
+        if (parsed) {
+          assistantMessage = parsed.message
+          appliedEdits = parsed.edits
+          if (parsed.edits.length === 0) {
+            updateThreadMessages((prev) => [
+              ...prev,
+              {
+                id: (Date.now() + 1).toString(),
+                role: 'assistant',
+                content: parsed.message?.trim() || 'No changes needed — your text already works here.',
+              },
+            ])
+            return
+          }
+          newText = applyEdits(currentText, parsed.edits).text
         } else {
-          // Model ignored the JSON protocol; treat output as a full replacement.
           newText = raw.trim()
         }
 
         if (!newText.trim() || newText.trim() === currentText.trim()) {
-          setChat((prev) => [
+          updateThreadMessages((prev) => [
             ...prev,
-            { id: (Date.now() + 1).toString(), role: 'assistant', content: 'No changes needed — your text already works here.' },
+            {
+              id: (Date.now() + 1).toString(),
+              role: 'assistant',
+              content: assistantMessage?.trim() || 'No changes needed — your text already works here.',
+            },
           ])
           return
         }
-        enterReview(baseText, newText, instruction)
+        enterReview(baseText, newText, instruction, assistantMessage, appliedEdits)
       },
       (errMessage) => {
         setIsStreaming(false)
-        setChat((prev) => [
+        updateThreadMessages((prev) => [
           ...prev,
           { id: (Date.now() + 1).toString(), role: 'assistant', content: `⚠️ ${errMessage}. Please try again.` },
         ])
@@ -608,7 +863,7 @@ INSTRUCTION: ${instruction}`
     // Background turn: let Claude decide if this was stylistic feedback and
     // update the Stylism network (reinforce / create / flag conflicts).
     void maintainStyleNetwork(instruction)
-  }, [aiPrompt, apiKey, editor, getFullContext, styleRules, attachedSelection, enterReview, maintainStyleNetwork])
+  }, [aiPrompt, apiKey, editor, getFullContext, styleRules, attachedSelection, enterReview, maintainStyleNetwork, updateThreadMessages])
 
   /* ── Tunnel vision ── */
   const openTunnel = useCallback(
@@ -650,8 +905,10 @@ INSTRUCTION: ${instruction}`
         return
       }
       if (e.key === 'Escape') {
-        if (tunnel) setTunnel(null)
-        else if (reviewActiveRef.current) rejectAll()
+        if (tunnel) { setTunnel(null); return }
+        if (showDocLibrary) { setShowDocLibrary(false); return }
+        if (showContextHouse) { setShowContextHouse(false); return }
+        if (reviewActiveRef.current) rejectAll()
         return
       }
       if (reviewActiveRef.current && mod && e.key === 'Enter') {
@@ -661,7 +918,7 @@ INSTRUCTION: ${instruction}`
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [setDocumentContent, tunnel, acceptAll, rejectAll])
+  }, [setDocumentContent, tunnel, acceptAll, rejectAll, showDocLibrary, showContextHouse])
 
   /* ── Drag selection into prompt ── */
   const handlePromptDrop = (e: React.DragEvent) => {
@@ -718,72 +975,123 @@ INSTRUCTION: ${instruction}`
   return (
     <div className="write-mode h-full relative overflow-hidden">
       <div className="h-full flex flex-col overflow-hidden">
-        <div className="flex-shrink-0 flex items-center justify-between border-b border-black/8 bg-white/30 backdrop-blur px-4 py-2">
-          <div className="flex items-center gap-1 min-w-0">
-            <input
-              value={documentTitle}
-              onChange={(e) => setDocumentTitle(e.target.value)}
-              className="write-doc-title"
-              placeholder="Untitled"
-            />
-            <span className="text-black/15 mx-2">|</span>
-            <button
-              onClick={() => editor?.chain().focus().undo().run()}
-              disabled={!editor?.can().undo()}
-              title="Undo (Ctrl+Z)"
-              className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70 disabled:opacity-25"
-            >
-              <Undo2 size={14} />
-            </button>
-            <button
-              onClick={() => editor?.chain().focus().redo().run()}
-              disabled={!editor?.can().redo()}
-              title="Redo (Ctrl+Shift+Z)"
-              className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70 disabled:opacity-25"
-            >
-              <Redo2 size={14} />
-            </button>
-            <span className="text-black/10 mx-1">|</span>
-            {[
-              { icon: <Bold size={14} />, action: () => editor?.chain().focus().toggleBold().run(), active: editor?.isActive('bold') },
-              { icon: <Italic size={14} />, action: () => editor?.chain().focus().toggleItalic().run(), active: editor?.isActive('italic') },
-              { icon: <UnderlineIcon size={14} />, action: () => editor?.chain().focus().toggleUnderline().run(), active: editor?.isActive('underline') },
-            ].map((btn, i) => (
+        {!showDocLibrary && !showContextHouse && (
+          <div className="flex-shrink-0 flex items-center justify-between border-b border-black/8 bg-white/30 backdrop-blur px-4 py-2">
+            <div className="flex items-center gap-1 min-w-0">
               <button
-                key={i}
-                onClick={btn.action}
-                className={`rounded-lg p-1.5 transition ${btn.active ? 'bg-black/10 text-black/80' : 'text-black/40 hover:bg-black/5 hover:text-black/70'}`}
+                onClick={() => { setShowDocLibrary(true); setAssistantOpen(false) }}
+                className="rounded-lg p-1.5 text-black/35 transition hover:bg-black/5 hover:text-black/60 flex-shrink-0"
+                title="Document library"
               >
-                {btn.icon}
+                <LayoutGrid size={14} />
               </button>
-            ))}
-            <span className="text-black/10 mx-1">|</span>
-            {[
-              { icon: <AlignLeft size={14} />, action: () => editor?.chain().focus().setTextAlign('left').run() },
-              { icon: <AlignCenter size={14} />, action: () => editor?.chain().focus().setTextAlign('center').run() },
-              { icon: <AlignRight size={14} />, action: () => editor?.chain().focus().setTextAlign('right').run() },
-            ].map((btn, i) => (
-              <button key={i} onClick={btn.action} className="rounded-lg p-1.5 text-black/40 hover:bg-black/5 hover:text-black/70 transition">
-                {btn.icon}
+              <input
+                value={documentTitle}
+                onChange={(e) => setDocumentTitle(e.target.value)}
+                className="write-doc-title"
+                placeholder="Untitled"
+              />
+              <span className="text-black/15 mx-2">|</span>
+              <button
+                onClick={() => editor?.chain().focus().undo().run()}
+                disabled={!editor?.can().undo()}
+                title="Undo (Ctrl+Z)"
+                className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70 disabled:opacity-25"
+              >
+                <Undo2 size={14} />
               </button>
-            ))}
+              <button
+                onClick={() => editor?.chain().focus().redo().run()}
+                disabled={!editor?.can().redo()}
+                title="Redo (Ctrl+Shift+Z)"
+                className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70 disabled:opacity-25"
+              >
+                <Redo2 size={14} />
+              </button>
+              <span className="text-black/10 mx-1">|</span>
+              {[
+                { icon: <Bold size={14} />, action: () => editor?.chain().focus().toggleBold().run(), active: editor?.isActive('bold') },
+                { icon: <Italic size={14} />, action: () => editor?.chain().focus().toggleItalic().run(), active: editor?.isActive('italic') },
+                { icon: <UnderlineIcon size={14} />, action: () => editor?.chain().focus().toggleUnderline().run(), active: editor?.isActive('underline') },
+              ].map((btn, i) => (
+                <button
+                  key={i}
+                  onClick={btn.action}
+                  className={`rounded-lg p-1.5 transition ${btn.active ? 'bg-black/10 text-black/80' : 'text-black/40 hover:bg-black/5 hover:text-black/70'}`}
+                >
+                  {btn.icon}
+                </button>
+              ))}
+              <span className="text-black/10 mx-1">|</span>
+              {[
+                { icon: <AlignLeft size={14} />, action: () => editor?.chain().focus().setTextAlign('left').run() },
+                { icon: <AlignCenter size={14} />, action: () => editor?.chain().focus().setTextAlign('center').run() },
+                { icon: <AlignRight size={14} />, action: () => editor?.chain().focus().setTextAlign('right').run() },
+              ].map((btn, i) => (
+                <button key={i} onClick={btn.action} className="rounded-lg p-1.5 text-black/40 hover:bg-black/5 hover:text-black/70 transition">
+                  {btn.icon}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <span className="text-xs text-black/35 mr-1">{wordCount} words</span>
+              <button
+                onClick={() => { setShowContextHouse(true); setAssistantOpen(false) }}
+                className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70"
+                title="Context House — research materials for this document"
+              >
+                <Inbox size={15} />
+              </button>
+              <button
+                onClick={() => { setAssistantOpen((v) => !v); setShowContextHouse(false) }}
+                className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70"
+                title={assistantOpen ? 'Hide assistant' : 'Show assistant'}
+              >
+                {assistantOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
+              </button>
+            </div>
           </div>
-          <div className="flex items-center gap-2.5 flex-shrink-0">
-            <span className="text-xs text-black/35">{wordCount} words</span>
-            <button
-              onClick={() => setAssistantOpen((v) => !v)}
-              className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70"
-              title={assistantOpen ? 'Hide assistant' : 'Show assistant'}
-            >
-              {assistantOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
-            </button>
-          </div>
-        </div>
+        )}
 
-        <div className="flex-1 overflow-y-auto">
-          <div className="tiptap-editor max-w-3xl mx-auto min-h-full">
-            <EditorContent editor={editor} className="min-h-full" />
+        <div className="flex-1 overflow-hidden relative">
+          {/* Editor — kept mounted; hidden when a full-screen panel is covering it */}
+          <div className={`h-full overflow-y-auto${showDocLibrary || showContextHouse ? ' invisible pointer-events-none' : ''}`}>
+            <div className="tiptap-editor max-w-3xl mx-auto min-h-full">
+              <EditorContent editor={editor} className="min-h-full" />
+            </div>
           </div>
+
+          {/* Documents library — slides up like a mode switch */}
+          <AnimatePresence initial={false}>
+            {showDocLibrary && (
+              <motion.div
+                key="doc-library"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ duration: 0.2, ease: [0.25, 1, 0.5, 1] }}
+                className="absolute inset-0 overflow-hidden"
+              >
+                <DocumentsMode onClose={() => setShowDocLibrary(false)} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Context House — full-screen overlay, same style as doc library */}
+          <AnimatePresence initial={false}>
+            {showContextHouse && (
+              <motion.div
+                key="context-house"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 6 }}
+                transition={{ duration: 0.2, ease: [0.25, 1, 0.5, 1] }}
+                className="absolute inset-0 overflow-hidden"
+              >
+                <ContextHouse onClose={() => setShowContextHouse(false)} />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Floating selection toolbar */}
@@ -823,8 +1131,8 @@ INSTRUCTION: ${instruction}`
         </AnimatePresence>
       </div>
 
-      {/* Floating vertical document tabs */}
-      <div className="doc-tabs-float" aria-label="Document tabs">
+      {/* Floating vertical document tabs — hidden when a panel is covering the workspace */}
+      {!showDocLibrary && !showContextHouse && <div className="doc-tabs-float" aria-label="Document tabs">
         {docTabs.map((tab) => (
           <div
             key={tab.id}
@@ -868,7 +1176,7 @@ INSTRUCTION: ${instruction}`
         <button className="doc-tab-add" onClick={handleNewTab} title="New tab">
           <Plus size={12} />
         </button>
-      </div>
+      </div>}
 
       <AnimatePresence initial={false}>
         {assistantOpen && (
@@ -881,7 +1189,44 @@ INSTRUCTION: ${instruction}`
             className="assistant-float"
           >
             <div className="assistant-panel">
-              <div className="flex-1 overflow-y-auto px-3 pt-4 pb-44 space-y-3">
+              {chatThreads.length > 0 && (
+                <div className="assistant-thread-bar">
+                  {chatThreads.map((thread) => (
+                    <button
+                      key={thread.id}
+                      type="button"
+                      className={`assistant-thread-pill${thread.id === activeChatThreadId ? ' active' : ''}`}
+                      onClick={() => switchChatThread(thread.id)}
+                      title={
+                        thread.passage
+                          ? `${thread.label} — focused on: ${thread.passage.slice(0, 120)}`
+                          : thread.label
+                      }
+                    >
+                      {thread.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="assistant-thread-pill assistant-thread-pill-add"
+                    onClick={() => {
+                      const tab = useStore.getState().getActiveTab()
+                      const { threads } = ensureTabChatState(tab)
+                      const newThread = createChatThread(threads)
+                      updateActiveTabChat({
+                        chatThreads: [...threads, newThread],
+                        activeChatThreadId: newThread.id,
+                      })
+                      const ed = editorRef.current
+                      if (ed && !reviewActiveRef.current) clearReferenceHighlightIn(ed)
+                    }}
+                    title="New chat"
+                  >
+                    <Plus size={11} />
+                  </button>
+                </div>
+              )}
+              <div className="flex-1 overflow-y-auto px-3 pt-3 pb-44 space-y-3">
                 {chat.map((entry) => {
                   const suggestion = entry.suggestionId
                     ? suggestions.find((s) => s.id === entry.suggestionId)
@@ -902,7 +1247,7 @@ INSTRUCTION: ${instruction}`
                           {entry.kind === 'style' && (
                             <p className="mb-1 text-[10px] font-semibold text-violet-700/70">Stylism</p>
                           )}
-                          <p className="whitespace-pre-wrap">{entry.content}</p>
+                          <p><InlineMd text={entry.content} /></p>
                           {entry.role === 'assistant' && suggestion?.accepted === true && (
                             <p className="mt-1.5 flex items-center gap-1 text-[10px] text-green-700">
                               <Check size={10} /> Applied
@@ -942,29 +1287,6 @@ INSTRUCTION: ${instruction}`
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handlePromptDrop}
               >
-                <AnimatePresence>
-                  {attachedSelection && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 8, scale: 0.97 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: 8, scale: 0.97 }}
-                      className="attached-popup"
-                    >
-                      <div className="flex items-start gap-2">
-                        <span className="attached-popup-tag">Passage</span>
-                        <p className="attached-popup-text">{attachedSelection}</p>
-                        <button
-                          type="button"
-                          onClick={detachSelection}
-                          className="text-black/30 hover:text-black/60 flex-shrink-0"
-                        >
-                          <X size={12} />
-                        </button>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
                 {dragOver && <div className="prompt-drop-hint">Drop to attach passage</div>}
 
                 <div className="assistant-input-bar">

@@ -167,7 +167,7 @@ You may combine reinforce_rules with create_style_rule in one turn. Multiple rul
 CURRENT STYLE NETWORK (sorted by weight, strongest first):
 ${formatRules(rules)}
 
-Keep any text response to the writer brief and direct (1-3 sentences). Only produce text when you flagged a conflict (ask the edit/narrow/delete question) or created a rule (one-line confirmation of what you'll do differently). For pure reinforcement or no action, return no text.`
+Text response rules: one sentence only, plain prose, no bullet lists, no em dashes, no bold. Only produce text when you flagged a conflict (one sentence naming the conflict, asking edit/narrow/delete) or created a rule (one sentence saying what you'll do differently). For pure reinforcement or no action, return no text.`
 }
 
 function buildResolutionSystem(rules: StyleRule[], conflictRuleId: string): string {
@@ -190,7 +190,7 @@ DECISION PROCEDURE:
 CURRENT STYLE NETWORK:
 ${formatRules(rules)}
 
-Reply with one short confirmation sentence of what you did. If their reply was ambiguous, ask one clarifying question instead of acting.`
+Reply with one sentence confirming what you did. No lists, no em dashes. If their reply was ambiguous, ask one short clarifying question instead of acting.`
 }
 
 interface ToolUseBlock {

@@ -20,6 +20,10 @@ interface MarkdownProps {
 
   size?: string
 
+  /** When provided, link clicks call this instead of navigating (exploration mode). */
+
+  onLinkClick?: (url: string, x: number, y: number, linkText?: string) => void
+
 }
 
 
@@ -44,7 +48,7 @@ function normalizeMath(input: string): string {
 
 
 
-function MarkdownImpl({ children, className = '', size = 'text-sm' }: MarkdownProps) {
+function MarkdownImpl({ children, className = '', size = 'text-sm', onLinkClick }: MarkdownProps) {
 
   return (
 
@@ -58,11 +62,67 @@ function MarkdownImpl({ children, className = '', size = 'text-sm' }: MarkdownPr
 
         components={{
 
-          a: ({ node, ...props }) => (
+          a: ({ node, href, children: linkChildren, ...props }) => {
 
-            <a {...props} target="_blank" rel="noopener noreferrer" />
+            const extractText = (c: React.ReactNode): string => {
 
-          ),
+              if (typeof c === 'string') return c
+
+              if (typeof c === 'number') return String(c)
+
+              if (Array.isArray(c)) return c.map(extractText).join('')
+
+              if (c && typeof c === 'object' && 'props' in (c as object)) {
+
+                return extractText((c as React.ReactElement).props.children)
+
+              }
+
+              return ''
+
+            }
+
+            const linkText = extractText(linkChildren)
+
+            return (
+
+              <a
+
+                {...props}
+
+                href={href}
+
+                target={onLinkClick ? undefined : '_blank'}
+
+                rel="noopener noreferrer"
+
+                onClick={
+
+                  onLinkClick && href
+
+                    ? (e) => {
+
+                        e.preventDefault()
+
+                        e.stopPropagation()
+
+                        onLinkClick(href, e.clientX, e.clientY, linkText || undefined)
+
+                      }
+
+                    : undefined
+
+                }
+
+              >
+
+                {linkChildren}
+
+              </a>
+
+            )
+
+          },
 
           code: ({ node, className: cls, children, ...props }) => {
 

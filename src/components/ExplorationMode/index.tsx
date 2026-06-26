@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { motion } from 'framer-motion'
 import ReactFlow, {
   Background,
   Controls,
@@ -13,7 +14,7 @@ import ReactFlow, {
   BackgroundVariant,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { Plus, Trash2, PenTool, X, Sparkles, LayoutGrid } from 'lucide-react'
+import { Plus, Trash2, PenTool, Sparkles, LayoutGrid, ChevronLeft, RefreshCw } from 'lucide-react'
 import { nanoid } from 'nanoid'
 import { useStore, type ExplorationNodeData } from '../../store/useStore'
 import { streamChat } from '../../lib/claude'
@@ -26,6 +27,7 @@ import { layoutTree } from './layout'
 import { aggregateSources, extractSourcesFromText, mergeSources, type SourceRef } from '../../lib/sources'
 import { routeExploration } from '../../lib/route'
 import { generateVisual, isVisualChoice, type VisualMessage } from '../../lib/visual'
+import { uploadAsset } from '../../lib/cloud'
 
 const nodeTypes = { exploration: ExplorationNode }
 const edgeTypes = { floating: FloatingEdge }
@@ -61,6 +63,7 @@ export default function ExplorationMode() {
     setExplorationNodes,
     setExplorationEdges,
     updateNodeResponse,
+    setAdventureThumbnail,
     setActiveTab,
     getFullContext,
   } = useStore()
@@ -84,7 +87,16 @@ export default function ExplorationMode() {
     ratio: number
   } | null>(null)
 
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeKind?: string } | null>(null)
+  const [sourcesOpen, setSourcesOpen] = useState(false)
+  const [linkPopup, setLinkPopup] = useState<{
+    x: number
+    y: number
+    url: string
+    sourceNodeId?: string
+    linkText?: string
+    embeddable: boolean | null  // null = checking
+  } | null>(null)
 
   // Inject transient pending highlight into the source node (not persisted to store)
   const startFullReply = useCallback((nodeId: string) => {
@@ -115,16 +127,24 @@ export default function ExplorationMode() {
     edgesRef.current = edges
   }, [edges])
 
-  // Load the selected adventure's whiteboard when switching
+  // Load the selected adventure's whiteboard when switching.
+  // Clear any isLoading flags that were left mid-stream (e.g. adventure was switched
+  // while a node was streaming — the completion callback would land on the wrong node
+  // list and never clear the flag in the store).
   useEffect(() => {
     if (!activeAdventureId) return
-    setNodes((activeAdventure?.nodes ?? []) as any)
+    const cleanNodes = (activeAdventure?.nodes ?? []).map((n: any) =>
+      n.data?.isLoading
+        ? { ...n, data: { ...n.data, isLoading: false, response: n.data.response || '⚠️ Loading was interrupted. Ask again to retry.' } }
+        : n
+    )
+    setNodes(cleanNodes as any)
     setEdges(activeAdventure?.edges ?? [])
     setSelectedNodeId(null)
     setPendingExcerpt(null)
     setContextMenu(null)
     setPrompt('')
-    prevCountRef.current = activeAdventure?.nodes.length ?? 0
+    prevCountRef.current = cleanNodes.length
   }, [activeAdventureId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const persistNodes = useCallback(
@@ -138,6 +158,164 @@ export default function ExplorationMode() {
     setExplorationNodes(nodesRef.current as any)
     setExplorationEdges(edgesRef.current as any)
   }, [setExplorationNodes, setExplorationEdges])
+
+  const handleLinkClick = useCallback(
+    (sourceNodeId: string, url: string, x: number, y: number, linkText?: string) => {
+      setLinkPopup({ x, y, url, sourceNodeId, linkText, embeddable: null })
+      setContextMenu(null)
+      // Check embeddability in the background
+      fetch(`http://localhost:3001/api/can-embed?url=${encodeURIComponent(url)}`)
+        .then((r) => r.json())
+        .then((data: { embeddable: boolean }) => {
+          setLinkPopup((prev) =>
+            prev && prev.url === url ? { ...prev, embeddable: data.embeddable } : prev
+          )
+        })
+        .catch(() => {
+          setLinkPopup((prev) =>
+            prev && prev.url === url ? { ...prev, embeddable: true } : prev
+          )
+        })
+    },
+    []
+  )
+
+  const createEmbedNode = useCallback(
+    (url: string, sourceNodeId?: string, linkText?: string) => {
+      const id = nanoid()
+      const sourceNode = sourceNodeId ? nodesRef.current.find((n) => n.id === sourceNodeId) : null
+      const pw = (sourceNode as any)?.width ?? 420
+
+      const pos = sourceNode
+        ? { x: sourceNode.position.x + pw + 90, y: sourceNode.position.y }
+        : rf
+        ? rf.project({ x: window.innerWidth / 2 - 280, y: window.innerHeight / 2 - 240 })
+        : { x: 200 + Math.random() * 200, y: 200 + nodesRef.current.length * 80 }
+
+      const newNode: Node<ExplorationNodeData> = {
+        id,
+        type: 'exploration',
+        position: pos,
+        data: {
+          prompt: url,
+          response: '',
+          nodeKind: 'embed',
+          embedUrl: url,
+          connectionCount: 0,
+        },
+      }
+
+      // Compute a rough ratio from where the link text appears in the source response
+      const highlightId = nanoid()
+      const sourceResponse = sourceNode?.data.response ?? ''
+      const ratio = linkText && sourceResponse
+        ? Math.max(0.1, Math.min(0.9, sourceResponse.indexOf(linkText) / Math.max(sourceResponse.length, 1)))
+        : 0.5
+
+      setNodes((prev) => {
+        let updated = [...prev, newNode]
+        if (sourceNodeId && linkText) {
+          updated = updated.map((n) =>
+            n.id === sourceNodeId
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    highlights: [
+                      ...(n.data.highlights ?? []),
+                      { id: highlightId, text: linkText, ratio, childId: id },
+                    ],
+                  },
+                }
+              : n
+          )
+        }
+        persistNodes(updated)
+        return updated
+      })
+
+      if (sourceNodeId) {
+        const edge = {
+          id: `e-${sourceNodeId}-${id}`,
+          source: sourceNodeId,
+          target: id,
+          type: 'floating',
+          data: linkText
+            ? { branchType: 'excerpt' as const }
+            : { branchType: 'full' as const },
+        }
+        setEdges((prev) => {
+          const updatedEdges = addEdge(edge, prev)
+          setExplorationEdges(updatedEdges as any)
+          const counts: Record<string, number> = {}
+          updatedEdges.forEach((e) => {
+            counts[e.source] = (counts[e.source] || 0) + 1
+            counts[e.target] = (counts[e.target] || 0) + 1
+          })
+          setNodes((prevNodes) =>
+            prevNodes.map((n) => ({
+              ...n,
+              data: { ...n.data, connectionCount: counts[n.id] || 0 },
+            }))
+          )
+          return updatedEdges
+        })
+      }
+
+      setLinkPopup(null)
+    },
+    [rf, setNodes, setEdges, setExplorationEdges, persistNodes]
+  )
+
+  // Amplify trackpad pinch-to-zoom (~3× more sensitive than React Flow's default).
+  // We intercept wheel events where ctrlKey is true (trackpad pinch) in the capture
+  // phase before React Flow's d3-zoom handler, apply a higher multiplier, then
+  // stop propagation so d3-zoom doesn't double-count the event.
+  useEffect(() => {
+    const wrapper = flowWrapperRef.current
+    if (!wrapper || !rf) return
+
+    const handleWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      e.stopPropagation()
+      const currentZoom = rf.getZoom()
+      // d3-zoom default sensitivity ≈ 0.002; we use 0.006 for ~3× amplification
+      const factor = Math.pow(2, -e.deltaY * 0.006)
+      rf.zoomTo(Math.min(4, Math.max(0.1, currentZoom * factor)), { duration: 0 })
+    }
+
+    wrapper.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+    return () => wrapper.removeEventListener('wheel', handleWheel, { capture: true })
+  }, [rf])
+
+  // Debounced board screenshot — fires 2 s after the last node/edge change
+  const captureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const captureBoard = useCallback(() => {
+    if (captureTimerRef.current) clearTimeout(captureTimerRef.current)
+    captureTimerRef.current = setTimeout(async () => {
+      if (!flowWrapperRef.current || !activeAdventureId) return
+      // Only capture if there are nodes with responses
+      if (!nodesRef.current.some((n) => n.data.response)) return
+      try {
+        const el = flowWrapperRef.current.querySelector('.react-flow__viewport') as HTMLElement | null
+        if (!el) return
+        const { default: html2canvas } = await import('html2canvas')
+        const canvas = await html2canvas(el, {
+          scale: 0.45,
+          useCORS: true,
+          allowTaint: true,
+          backgroundColor: 'rgb(215,215,215)',
+          logging: false,
+        })
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.72)
+        const url = await uploadAsset(dataUrl, 'adventure-thumb')
+        setAdventureThumbnail(activeAdventureId, url)
+      } catch {
+        // Non-critical — silently skip
+      }
+    }, 2000)
+  }, [activeAdventureId, setAdventureThumbnail])
 
   const removeNodesById = useCallback(
     (ids: string[]) => {
@@ -219,9 +397,197 @@ export default function ExplorationMode() {
   const onNodeContextMenu = useCallback(
     (e: React.MouseEvent, node: Node<ExplorationNodeData>) => {
       e.preventDefault()
-      setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id })
+      setContextMenu({ x: e.clientX, y: e.clientY, nodeId: node.id, nodeKind: node.data.nodeKind })
     },
     []
+  )
+
+  // Forward handle to runVisualGeneration (declared later) so retryNode can call
+  // it without a declaration-order TDZ in its dependency array.
+  const runVisualGenerationRef = useRef<
+    (
+      id: string,
+      req: { query: string; parentId?: string; excerpt?: string; method?: 'search' | 'generate' }
+    ) => Promise<void>
+  >()
+
+  // Re-run the generation pipeline for an existing node in-place.
+  const retryNode = useCallback(
+    async (nodeId: string) => {
+      const node = nodesRef.current.find((n) => n.id === nodeId)
+      if (!node) return
+      const { prompt: userPrompt } = node.data
+      if (!userPrompt.trim()) return
+
+      const parentEdge = edgesRef.current.find((e) => e.target === nodeId)
+      const parentId = parentEdge?.source
+      const parentNode = parentId ? nodesRef.current.find((n) => n.id === parentId) ?? null : null
+
+      // Reset the node to a clean loading state
+      setNodes((prev) => {
+        const updated = prev.map((n) =>
+          n.id === nodeId
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  response: '',
+                  isLoading: true,
+                  visual: undefined,
+                  visualStatus: undefined,
+                  visualChoice: undefined,
+                  nodeKind: 'text' as const,
+                  sources: [],
+                },
+              }
+            : n
+        )
+        persistNodes(updated)
+        return updated
+      })
+
+      if (!apiKey) {
+        setNodes((prev) => {
+          const updated = prev.map((n) =>
+            n.id === nodeId ? { ...n, data: { ...n.data, response: '⚠️ No API key set.', isLoading: false } } : n
+          )
+          persistNodes(updated)
+          return updated
+        })
+        return
+      }
+
+      const decision = await routeExploration({
+        prompt: userPrompt,
+        apiKey,
+        context: getFullContext(),
+        messageChain: buildMessageChain(nodesRef.current, edgesRef.current, parentId),
+      })
+
+      if (decision.action === 'generate' || decision.action === 'search') {
+        await runVisualGenerationRef.current?.(nodeId, { query: decision.query, parentId, method: decision.action })
+        return
+      }
+
+      if (decision.action === 'choose') {
+        setNodes((prev) => {
+          const updated = prev.map((n) =>
+            n.id === nodeId
+              ? {
+                  ...n,
+                  data: {
+                    ...n.data,
+                    nodeKind: 'visual' as const,
+                    isLoading: false,
+                    visualStatus: undefined,
+                    visualChoice: {},
+                    visualRequest: { query: decision.query, parentId },
+                  },
+                }
+              : n
+          )
+          persistNodes(updated)
+          return updated
+        })
+        return
+      }
+
+      // Text answer: research → stream
+      let researchSources: SourceRef[] = []
+      let researchContext = ''
+      try {
+        const research = await researchQuery(userPrompt)
+        researchSources = research.sources
+        researchContext = research.context
+        setNodes((prev) => {
+          const updated = prev.map((n) =>
+            n.id === nodeId
+              ? { ...n, data: { ...n.data, sources: mergeSources(researchSources, extractSourcesFromText(userPrompt)) } }
+              : n
+          )
+          persistNodes(updated)
+          return updated
+        })
+      } catch {
+        researchSources = extractSourcesFromText(userPrompt)
+      }
+
+      const context = getFullContext()
+      const system = `You are a research and writing assistant. Be thoughtful, analytical, and intellectually stimulating.
+Give substantive responses that help the writer explore ideas deeply.
+
+You MUST ground your answer in credible sources. Use the web research results below when provided.
+Cite every external claim with a markdown link, e.g. [Article title](https://example.com).
+Prefer sources from the research results; do not invent URLs.
+If the user asks to see what something looks like, note that they can ask for a visual/image and the app will generate one — do not claim you cannot show images.
+NEVER tell the user to "use the app's image generator" or paste a prompt elsewhere — if they want a sketch, diagram, or image, they should ask directly and the system handles it automatically.
+
+${researchContext ? `=== WEB RESEARCH RESULTS ===\n${researchContext}\n` : 'No web research results were returned — rely on your knowledge and any background context, and cite well-known references where possible.'}
+${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
+
+      const messages: { role: 'user' | 'assistant'; content: string }[] = []
+      if (parentNode) {
+        messages.push({ role: 'user', content: parentNode.data.prompt })
+        if (parentNode.data.response) {
+          messages.push({ role: 'assistant', content: parentNode.data.response })
+        }
+      }
+      messages.push({ role: 'user', content: userPrompt })
+
+      let retryResponse = ''
+      await streamChat(
+        messages,
+        system,
+        apiKey,
+        (chunk) => {
+          retryResponse += chunk
+          setNodes((prev) =>
+            prev.map((n) =>
+              n.id === nodeId ? { ...n, data: { ...n.data, response: retryResponse, isLoading: true } } : n
+            )
+          )
+        },
+        () => {
+          setNodes((prev) => {
+            const updated = prev.map((n) => {
+              if (n.id !== nodeId) return n
+              const cited = extractSourcesFromText(retryResponse)
+              return {
+                ...n,
+                data: {
+                  ...n.data,
+                  response: retryResponse,
+                  isLoading: false,
+                  sources: mergeSources(n.data.sources ?? researchSources, cited),
+                },
+              }
+            })
+            persistNodes(updated)
+            return updated
+          })
+          captureBoard()
+        },
+        (errMessage) => {
+          setNodes((prev) => {
+            const updated = prev.map((n) =>
+              n.id === nodeId
+                ? {
+                    ...n,
+                    data: {
+                      ...n.data,
+                      response: retryResponse || `⚠️ ${errMessage}. Please try again.`,
+                      isLoading: false,
+                    },
+                  }
+                : n
+            )
+            persistNodes(updated)
+            return updated
+          })
+        }
+      )
+    },
+    [apiKey, setNodes, persistNodes, getFullContext, captureBoard]
   )
 
   const onConnect = useCallback(
@@ -315,6 +681,12 @@ export default function ExplorationMode() {
           return
         }
 
+        // Move the generated image off the local blob into Supabase Storage,
+        // keeping only its URL in state (falls back to the data URL on failure).
+        const storedVisual = result.imageDataUrl?.startsWith('data:')
+          ? { ...result, imageDataUrl: await uploadAsset(result.imageDataUrl, 'visual') }
+          : result
+
         setNodes((prev) => {
           const updated = prev.map((n) => {
             if (n.id !== id) return n
@@ -331,7 +703,7 @@ export default function ExplorationMode() {
               ...n,
               data: {
                 ...n.data,
-                visual: result,
+                visual: storedVisual,
                 response: result.caption,
                 isLoading: false,
                 visualStatus: undefined,
@@ -367,6 +739,7 @@ export default function ExplorationMode() {
     },
     [apiKey, setNodes, persistNodes, getFullContext]
   )
+  runVisualGenerationRef.current = runVisualGeneration
 
   const resolveVisualChoice = useCallback(
     (nodeId: string, method: 'search' | 'generate') => {
@@ -393,9 +766,11 @@ export default function ExplorationMode() {
           onVisualChoice: n.data.visualChoice
             ? (method: 'search' | 'generate') => resolveVisualChoice(n.id, method)
             : undefined,
+          onLinkClick: (url: string, x: number, y: number, linkText?: string) =>
+            handleLinkClick(n.id, url, x, y, linkText),
         },
       })),
-    [nodes, pendingExcerpt, startFullReply, selectedNodeId, nodesWithFullReply, resolveVisualChoice]
+    [nodes, pendingExcerpt, startFullReply, selectedNodeId, nodesWithFullReply, resolveVisualChoice, handleLinkClick]
   )
 
   const createNode = useCallback(
@@ -634,6 +1009,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
             persistNodes(updated)
             return updated
           })
+          captureBoard()
         },
         (errMessage) => {
           setNodes((prev) => {
@@ -790,8 +1166,8 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
   )
 
   return (
-    <div className="h-full flex">
-      {/* Whiteboard */}
+    <div className="h-full flex relative overflow-hidden">
+      {/* Whiteboard — always fills full width */}
       <div className="flex-1 relative" ref={flowWrapperRef}>
         <ReactFlow
           nodes={flowNodes}
@@ -809,6 +1185,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
           }}
           onPaneClick={() => {
             setContextMenu(null)
+            setLinkPopup(null)
             setPendingExcerpt(null)
           }}
           onNodeContextMenu={onNodeContextMenu}
@@ -827,10 +1204,23 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
 
         {contextMenu && (
           <div
-            className="fixed z-50 min-w-[120px] overflow-hidden rounded-lg border border-black/10 bg-white py-1 shadow-lg"
+            className="fixed z-50 min-w-[140px] overflow-hidden rounded-lg border border-black/10 bg-white py-1 shadow-lg"
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onClick={(e) => e.stopPropagation()}
           >
+            {contextMenu.nodeKind !== 'embed' && (
+              <button
+                type="button"
+                onClick={() => {
+                  retryNode(contextMenu.nodeId)
+                  setContextMenu(null)
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-black/70 hover:bg-black/5"
+              >
+                <RefreshCw size={14} />
+                Retry
+              </button>
+            )}
             <button
               type="button"
               onClick={() => removeNodesById([contextMenu.nodeId])}
@@ -840,6 +1230,57 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
               Delete
             </button>
           </div>
+        )}
+
+        {linkPopup && (
+          <>
+            {/* Backdrop to dismiss */}
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => setLinkPopup(null)}
+            />
+            <div
+              className="fixed z-50 overflow-hidden rounded-xl border border-black/10 bg-white shadow-xl"
+              style={{ left: linkPopup.x, top: linkPopup.y + 8 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-3 py-2 border-b border-black/6">
+                <p className="max-w-[220px] truncate text-[11px] text-black/40">{linkPopup.url}</p>
+              </div>
+              <div className="p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.open(linkPopup.url, '_blank', 'noopener,noreferrer')
+                    setLinkPopup(null)
+                  }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-black/75 hover:bg-black/[0.04]"
+                >
+                  <Plus size={13} className="text-black/40" />
+                  Open in new tab
+                </button>
+
+                {/* Embed option — hidden when confirmed non-embeddable */}
+                {linkPopup.embeddable !== false && (
+                  <button
+                    type="button"
+                    disabled={linkPopup.embeddable === null}
+                    onClick={() => createEmbedNode(linkPopup.url, linkPopup.sourceNodeId, linkPopup.linkText)}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-black/75 hover:bg-black/[0.04] disabled:opacity-40 disabled:cursor-default"
+                  >
+                    <Sparkles size={13} className={linkPopup.embeddable === null ? 'animate-pulse text-black/30' : 'text-black/40'} />
+                    {linkPopup.embeddable === null ? 'Checking…' : 'Embed on canvas'}
+                  </button>
+                )}
+
+                {linkPopup.embeddable === false && (
+                  <p className="px-3 py-2 text-[11px] text-black/35 italic">
+                    This site doesn't allow embedding.
+                  </p>
+                )}
+              </div>
+            </div>
+          </>
         )}
 
         <AdventureMenu onBeforeSwitch={flushAdventureToStore} />
@@ -857,22 +1298,6 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
 
         {/* Prompt input overlay */}
         <div className="exploration-prompt-bar absolute bottom-4 left-1/2 -translate-x-1/2 w-full max-w-xl px-4">
-          {/* Captured excerpt chip sits ABOVE the input */}
-          {pendingExcerpt && (
-            <div className="card mb-2 flex items-start gap-2 border-white/25 p-2 shadow-2xl animate-slide-up">
-              <Sparkles size={12} className="mt-0.5 flex-shrink-0 text-white/60" />
-              <p className="flex-1 text-xs italic text-white/60 line-clamp-2">
-                "{pendingExcerpt.text}"
-              </p>
-              <button
-                onClick={() => setPendingExcerpt(null)}
-                className="flex-shrink-0 text-white/30 hover:text-white/60"
-              >
-                <X size={12} />
-              </button>
-            </div>
-          )}
-
           <form onSubmit={handleNewNode} className="card flex items-center gap-2 p-2 shadow-2xl">
             <input
               ref={promptInputRef}
@@ -929,19 +1354,47 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         )}
       </div>
 
-      {/* Right sidebar — collapsible sources */}
-      <div className="w-72 border-l border-black/8 bg-white/20 flex flex-col overflow-hidden backdrop-blur-sm">
-        <div className="flex-1 overflow-y-auto p-3 min-w-0">
-          <LiveSourceFeed sources={rankedSources} />
-        </div>
+      {/* Sources drawer — slides in from the right */}
+      <motion.div
+        animate={{ x: sourcesOpen ? 0 : '100%' }}
+        initial={false}
+        transition={{ duration: 0.22, ease: [0.25, 1, 0.5, 1] }}
+        className="absolute right-0 top-0 bottom-0 w-72 flex z-20"
+      >
+        {/* Toggle tab — peeks out from the left edge of the drawer */}
+        <button
+          type="button"
+          onClick={() => setSourcesOpen((v) => !v)}
+          className="absolute left-0 top-1/2 -translate-x-full -translate-y-1/2 h-20 w-6 flex flex-col items-center justify-center gap-1.5 rounded-l-lg border border-r-0 border-black/8 bg-white/55 backdrop-blur-sm hover:bg-white/80 transition-colors"
+          title={sourcesOpen ? 'Hide sources' : 'Show sources'}
+        >
+          <ChevronLeft
+            size={11}
+            className={`transition-transform duration-[220ms] text-black/45 ${sourcesOpen ? '' : 'rotate-180'}`}
+          />
+          {rankedSources.length > 0 && (
+            <span className="text-[9px] font-semibold text-black/38 leading-none tabular-nums">
+              {rankedSources.length}
+            </span>
+          )}
+        </button>
 
-        <div className="p-3 border-t border-black/8 min-w-0">
-          <button onClick={() => setActiveTab('write')} className="btn-primary w-full flex items-center justify-center gap-2">
-            <PenTool size={14} />
-            Write
-          </button>
+        {/* Panel content */}
+        <div className="flex-1 border-l border-black/8 bg-white/20 flex flex-col overflow-hidden backdrop-blur-sm">
+          <div className="flex-1 overflow-y-auto p-3 min-w-0">
+            <LiveSourceFeed sources={rankedSources} defaultOpen />
+          </div>
+          <div className="p-3 border-t border-black/8 min-w-0">
+            <button
+              onClick={() => setActiveTab('write')}
+              className="btn-primary w-full flex items-center justify-center gap-2"
+            >
+              <PenTool size={14} />
+              Write
+            </button>
+          </div>
         </div>
-      </div>
+      </motion.div>
     </div>
   )
 }

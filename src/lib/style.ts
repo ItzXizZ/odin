@@ -292,8 +292,10 @@ PRESERVATION IS YOUR HIGHEST PRIORITY.
 - Never rewrite a whole paragraph when fixing a phrase or sentence will do.
 - Preserve the writer's voice, vocabulary, and idiosyncrasies.
 
-OUTPUT FORMAT — respond with ONLY a JSON object, no prose, no code fences:
-{"edits":[{"find":"<exact verbatim substring to replace>","replace":"<the new text>"}]}
+OUTPUT FORMAT — respond with ONLY a JSON object, no code fences:
+{"message":"<1–3 conversational sentences explaining what you changed and why — speak directly to the writer, like a thoughtful editor>","edits":[{"find":"<exact verbatim substring to replace>","replace":"<the new text>"}]}
+
+The "message" appears in chat. Be specific about the key changes; do not say "review inline" or repeat the instruction verbatim.
 
 FORMATTING — write plain prose only:
 - Do NOT use Markdown (hash headings, asterisk bold, dash bullets, numbered lists, code spans, or markdown links).
@@ -307,7 +309,7 @@ RULES FOR EDITS:
 - To delete text, set "replace" to "" (or to the surrounding text minus the removed part).
 - Order edits top-to-bottom as they appear in the source. Do not produce overlapping edits.
 - If a true improvement requires rewriting more, still prefer several small edits over one large one.
-- If nothing should change, return {"edits":[]}.
+- If nothing should change, return {"message":"<brief explanation>","edits":[]}.
 
 ${styleGuide ? styleGuide + '\n\n' : ''}${context ? `=== WRITER'S RESEARCH CONTEXT (for grounding only) ===\n${context.slice(0, 4000)}` : ''}`
 }
@@ -317,21 +319,63 @@ export interface ParsedEdit {
   replace: string
 }
 
-/** Lenient parse of the model's edit JSON. Returns null if unusable. */
-export function parseEdits(raw: string): ParsedEdit[] | null {
-  let text = raw.trim()
-  // Strip code fences if the model added them despite instructions.
-  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+export interface EditResponse {
+  edits: ParsedEdit[]
+  message?: string
+}
 
-  const tryParse = (s: string): ParsedEdit[] | null => {
+/**
+ * Escape literal (unescaped) newlines and carriage returns inside JSON string
+ * values so JSON.parse doesn't choke on model output that includes line breaks
+ * mid-string (a common model error).
+ */
+function sanitizeJsonStrings(text: string): string {
+  let inString = false
+  let escaped = false
+  let result = ''
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (escaped) {
+      result += ch
+      escaped = false
+      continue
+    }
+    if (ch === '\\' && inString) {
+      result += ch
+      escaped = true
+      continue
+    }
+    if (ch === '"') {
+      inString = !inString
+      result += ch
+      continue
+    }
+    if (inString) {
+      if (ch === '\n') { result += '\\n'; continue }
+      if (ch === '\r') { result += '\\r'; continue }
+      if (ch === '\t') { result += '\\t'; continue }
+    }
+    result += ch
+  }
+  return result
+}
+
+/** Lenient parse of the model's edit JSON. Returns null if unusable. */
+export function parseEditResponse(raw: string): EditResponse | null {
+  let text = raw.trim()
+  text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+  text = sanitizeJsonStrings(text)
+
+  const tryParse = (s: string): EditResponse | null => {
     try {
       const obj = JSON.parse(s)
+      const message = typeof obj.message === 'string' ? obj.message.trim() : undefined
       const edits = Array.isArray(obj) ? obj : obj?.edits
       if (!Array.isArray(edits)) return null
       const clean = edits
         .filter((e) => e && typeof e.find === 'string' && typeof e.replace === 'string')
         .map((e) => ({ find: e.find as string, replace: e.replace as string }))
-      return clean
+      return { edits: clean, message: message || undefined }
     } catch {
       return null
     }
@@ -340,7 +384,6 @@ export function parseEdits(raw: string): ParsedEdit[] | null {
   let result = tryParse(text)
   if (result) return result
 
-  // Fall back to extracting the outermost {...} block.
   const first = text.indexOf('{')
   const last = text.lastIndexOf('}')
   if (first !== -1 && last > first) {
@@ -348,6 +391,138 @@ export function parseEdits(raw: string): ParsedEdit[] | null {
     if (result) return result
   }
   return null
+}
+
+/** @deprecated Prefer parseEditResponse — kept for callers that only need edits. */
+export function parseEdits(raw: string): ParsedEdit[] | null {
+  return parseEditResponse(raw)?.edits ?? null
+}
+
+/* ── Agentic response types ─────────────────────────────────── */
+
+export interface AgentChatResponse {
+  type: 'chat'
+  message: string
+}
+
+export interface AgentEditResponse {
+  type: 'edit'
+  message?: string
+  edits: ParsedEdit[]
+}
+
+export interface AgentCreateResponse {
+  type: 'create'
+  message?: string
+  content: string
+}
+
+export type AgentResponse = AgentChatResponse | AgentEditResponse | AgentCreateResponse
+
+/**
+ * Parse the model's agentic response JSON. Returns null if the output is
+ * unrecognizable so the caller can fall back to legacy edit parsing.
+ */
+export function parseAgentResponse(raw: string): AgentResponse | null {
+  let text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+  text = sanitizeJsonStrings(text)
+  const first = text.indexOf('{')
+  const last = text.lastIndexOf('}')
+  if (first === -1 || last <= first) return null
+
+  try {
+    const obj = JSON.parse(text.slice(first, last + 1))
+    const type = obj?.type as string | undefined
+
+    if (type === 'chat') {
+      const message = typeof obj.message === 'string' ? obj.message.trim() : ''
+      if (!message) return null
+      return { type: 'chat', message }
+    }
+
+    if (type === 'edit') {
+      const edits: ParsedEdit[] = Array.isArray(obj.edits)
+        ? obj.edits
+            .filter((e: unknown) => e && typeof (e as ParsedEdit).find === 'string' && typeof (e as ParsedEdit).replace === 'string')
+            .map((e: ParsedEdit) => ({ find: e.find, replace: e.replace }))
+        : []
+      const message = typeof obj.message === 'string' ? obj.message.trim() : undefined
+      return { type: 'edit', message, edits }
+    }
+
+    if (type === 'create') {
+      const content = typeof obj.content === 'string' ? obj.content.trim() : ''
+      if (!content) return null
+      const message = typeof obj.message === 'string' ? obj.message.trim() : undefined
+      return { type: 'create', message, content }
+    }
+
+    return null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Unified system prompt for non-empty documents.
+ *
+ * Instead of hard-coding "edit only", this lets the model choose between
+ * three response modes based on the writer's intent: targeted edits, new
+ * content generation, or a plain conversational reply.
+ */
+export function buildAgentSystemPrompt(opts: {
+  context?: string
+  styleGuide?: string
+  scope: 'document' | 'passage'
+}): string {
+  const { context, styleGuide, scope } = opts
+
+  const editScopeNote =
+    scope === 'passage'
+      ? 'For "edit": your "find" strings must be exact substrings of the selected passage shown.'
+      : 'For "edit": your "find" strings must be exact substrings of the document text shown.'
+
+  return `You are an intelligent writing assistant embedded in a writing tool. Based on what the writer is asking, choose one of three response modes:
+
+WHEN TO USE EACH TYPE:
+- "edit" — writer wants targeted changes to existing text (improve, fix, tighten, rewrite a sentence, remove something, etc.)
+- "create" — writer wants new content written or added (write a paragraph about X, add an introduction, continue this, draft a section, make something, etc.)
+- "chat" — writer is asking a question, requesting feedback, or having a conversation without asking for a doc change
+
+OUTPUT FORMAT — respond with ONLY a JSON object, no code fences, using exactly one shape:
+
+Conversational reply (no doc changes):
+{"type":"chat","message":"<your response>"}
+
+Editing existing text:
+{"type":"edit","message":"<one short sentence — what you changed and why>","edits":[{"find":"<exact verbatim substring>","replace":"<new text>"}]}
+
+Generating new content to add:
+{"type":"create","message":"<one short sentence about what you wrote>","content":"<clean prose, paragraphs separated by blank lines>"}
+
+${editScopeNote}
+
+EDIT RULES:
+- Copy each "find" string character-for-character (exact punctuation, capitalization, spacing)
+- Keep "find" tight — the specific phrase or sentence changing, plus just enough context to be unambiguous
+- Order edits top-to-bottom as they appear in the source; do not overlap
+- If nothing needs changing, use "chat" type with a brief explanation
+
+MESSAGE FIELD RULES (applies to "message" in all types):
+- One sentence, two at most. Direct, conversational, specific.
+- No bullet lists, no em dashes, no numbered points — plain prose only.
+- Speak like a human editor, not an AI giving a status report.
+- You may use **bold** to stress a key word if it genuinely helps.
+
+JSON SAFETY — critical:
+- Never put a literal newline inside a JSON string value. Use the escape sequence \\n if you need a line break.
+- The entire response must be valid JSON on emit.
+
+FORMATTING — write plain prose only in document content fields ("content", "replace"):
+- No Markdown symbols (no #, *, -, **, >, numbered lists, code fences)
+- The editor is rich text; those symbols appear literally if you use them
+
+${styleGuide ? styleGuide + '\n\n' : ''}${context ? `=== WRITER'S RESEARCH CONTEXT (for grounding only) ===\n${context.slice(0, 4000)}` : ''}`
 }
 
 /**

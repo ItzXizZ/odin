@@ -7,12 +7,14 @@ interface MessageSourcesPanelProps {
   sources: SourceRef[]
   label?: string
   isLoading?: boolean
+  onLinkClick?: (url: string, x: number, y: number, linkText?: string) => void
 }
 
 export default function MessageSourcesPanel({
   sources,
   label = 'sources',
   isLoading = false,
+  onLinkClick,
 }: MessageSourcesPanelProps) {
   const [open, setOpen] = useState(false)
   const hasSources = sources.length > 0
@@ -72,10 +74,16 @@ export default function MessageSourcesPanel({
                 <a
                   key={source.id}
                   href={source.url}
-                  target="_blank"
+                  target={onLinkClick ? undefined : '_blank'}
                   rel="noopener noreferrer"
                   className="group flex items-start gap-1.5 rounded px-1.5 py-1 hover:bg-black/[0.04]"
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (onLinkClick) {
+                      e.preventDefault()
+                      onLinkClick(source.url, e.clientX, e.clientY, source.title)
+                    }
+                  }}
                 >
                   <span className="flex-1 text-[10px] text-black/55 leading-snug group-hover:text-black/75 truncate">
                     {source.title}

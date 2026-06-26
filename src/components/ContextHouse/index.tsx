@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useMemo } from 'react'
+import type { CSSProperties } from 'react'
 import {
   FileText,
   Image as ImageIcon,
@@ -8,14 +9,206 @@ import {
   PenTool,
   GitBranch,
   ChevronDown,
-  Link2,
+  Layers,
 } from 'lucide-react'
 import { nanoid } from 'nanoid'
 import { useStore } from '../../store/useStore'
+import type { Adventure } from '../../store/useStore'
 import { uploadPDF, syncChat } from '../../lib/claude'
 import { compressImageToDataUrl } from '../../lib/image'
+import { renderPDFThumbnail } from '../../lib/pdfThumbnail'
+import { uploadAsset } from '../../lib/cloud'
 
-export default function ContextHouse() {
+type OpenSection = 'pdf' | 'image' | 'adventure' | null
+
+/** Returns rotations (degrees) for a deck of N cards (max 5). */
+function deckRotations(n: number): number[] {
+  const count = Math.min(n, 5)
+  if (count === 0) return []
+  if (count === 1) return [0]
+  const spread = Math.min(9, count * 2.5)
+  return Array.from({ length: count }, (_, i) =>
+    count === 1 ? 0 : -spread + (i * (spread * 2)) / (count - 1)
+  )
+}
+
+/* ── Faithful whiteboard replica — looks like an actual board screenshot ── */
+function AdventurePreview({ adv }: { adv: Adventure }) {
+  // If a real captured image exists, show it directly
+  if (adv.thumbnail) {
+    return (
+      <img
+        src={adv.thumbnail}
+        alt=""
+        className="ctx-ghost-page-thumb"
+        style={{ borderRadius: 'inherit' }}
+      />
+    )
+  }
+
+  const nodes = adv.nodes.filter((n) => n.data.response || n.data.prompt)
+  const edges = adv.edges
+
+  if (nodes.length === 0) {
+    return (
+      <div className="ctx-ghost-adv-empty">
+        <GitBranch size={18} />
+      </div>
+    )
+  }
+
+  // SVG canvas size
+  const W = 180
+  const H = 120
+  const PAD = 12
+
+  // Actual node card dimensions in the real board (approximate)
+  const REAL_CARD_W = 260
+  const REAL_CARD_H = 120
+
+  // Bounding box accounting for card extents
+  const xs = nodes.map((n) => n.position.x)
+  const ys = nodes.map((n) => n.position.y)
+  const bMinX = Math.min(...xs) - 10
+  const bMaxX = Math.max(...xs) + REAL_CARD_W + 10
+  const bMinY = Math.min(...ys) - 10
+  const bMaxY = Math.max(...ys) + REAL_CARD_H + 10
+
+  const rangeX = Math.max(bMaxX - bMinX, REAL_CARD_W * 1.5)
+  const rangeY = Math.max(bMaxY - bMinY, REAL_CARD_H * 1.5)
+
+  const scaleX = (W - PAD * 2) / rangeX
+  const scaleY = (H - PAD * 2) / rangeY
+  const scale = Math.min(scaleX, scaleY, 0.35) // cap scale
+
+  const cardW = REAL_CARD_W * scale
+  const cardH = REAL_CARD_H * scale
+  const fontSize = Math.max(3.5, Math.min(5.5, cardH * 0.28))
+
+  const toX = (x: number) => PAD + (x - bMinX) * scale
+  const toY = (y: number) => PAD + (y - bMinY) * scale
+
+  const nodeById = new Map(nodes.map((n) => [n.id, n]))
+  const uid = adv.id.slice(0, 8)
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      width="100%"
+      height="100%"
+      style={{ display: 'block', borderRadius: 'inherit' }}
+    >
+      <defs>
+        {/* Dot grid — same as the app background */}
+        <pattern id={`grid-${uid}`} width="10" height="10" patternUnits="userSpaceOnUse">
+          <circle cx="5" cy="5" r="0.65" fill="rgba(0,0,0,0.18)" />
+        </pattern>
+        {/* Subtle card drop-shadow filter */}
+        <filter id={`shadow-${uid}`} x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="1" stdDeviation="1.5" floodOpacity="0.12" />
+        </filter>
+      </defs>
+
+      {/* Background — same colour as the app */}
+      <rect width={W} height={H} fill="rgb(215,215,215)" />
+      <rect width={W} height={H} fill={`url(#grid-${uid})`} />
+
+      {/* Edges — bezier curves like the app */}
+      {edges.map((e) => {
+        const src = nodeById.get(e.source)
+        const tgt = nodeById.get(e.target)
+        if (!src || !tgt) return null
+        const x1 = toX(src.position.x) + cardW / 2
+        const y1 = toY(src.position.y) + cardH
+        const x2 = toX(tgt.position.x) + cardW / 2
+        const y2 = toY(tgt.position.y)
+        const cy = (y1 + y2) / 2
+        return (
+          <path
+            key={e.id}
+            d={`M ${x1} ${y1} C ${x1} ${cy}, ${x2} ${cy}, ${x2} ${y2}`}
+            stroke="rgba(0,0,0,0.22)"
+            strokeWidth="0.9"
+            fill="none"
+          />
+        )
+      })}
+
+      {/* Node cards */}
+      {nodes.map((n) => {
+        const cx = toX(n.position.x)
+        const cy = toY(n.position.y)
+        const label = (n.data.prompt || '').slice(0, 32) + ((n.data.prompt?.length ?? 0) > 32 ? '…' : '')
+        const hasResponse = !!n.data.response
+
+        return (
+          <g key={n.id} filter={`url(#shadow-${uid})`}>
+            {/* Glass card background */}
+            <rect
+              x={cx}
+              y={cy}
+              width={cardW}
+              height={cardH}
+              rx={cardW * 0.07}
+              fill={hasResponse ? 'rgba(255,255,255,0.86)' : 'rgba(255,255,255,0.55)'}
+              stroke="rgba(255,255,255,0.7)"
+              strokeWidth="0.5"
+            />
+            {/* Top colour bar matching app node style */}
+            <rect
+              x={cx}
+              y={cy}
+              width={cardW}
+              height={cardH * 0.22}
+              rx={cardW * 0.07}
+              fill={hasResponse ? 'rgba(100,150,255,0.1)' : 'rgba(200,200,200,0.4)'}
+            />
+            {/* Prompt text */}
+            <text
+              x={cx + cardW * 0.08}
+              y={cy + cardH * 0.42}
+              fontSize={fontSize}
+              fill="rgba(30,30,30,0.82)"
+              fontFamily="Inter, sans-serif"
+              fontWeight="500"
+            >
+              {label}
+            </text>
+            {/* Response indicator bar */}
+            {hasResponse && (
+              <rect
+                x={cx + cardW * 0.08}
+                y={cy + cardH * 0.58}
+                width={cardW * 0.75}
+                height={fontSize * 0.55}
+                rx="1"
+                fill="rgba(60,60,60,0.12)"
+              />
+            )}
+            {hasResponse && (
+              <rect
+                x={cx + cardW * 0.08}
+                y={cy + cardH * 0.72}
+                width={cardW * 0.5}
+                height={fontSize * 0.55}
+                rx="1"
+                fill="rgba(60,60,60,0.08)"
+              />
+            )}
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
+/* Memoised so the SVG only re-renders when the adventure changes */
+const AdventurePreviewMemo = ({ adv }: { adv: Adventure }) => {
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  return useMemo(() => <AdventurePreview adv={adv} />, [adv.nodes, adv.edges, adv.thumbnail])
+}
+
+export default function ContextHouse({ onClose }: { onClose?: () => void }) {
   const {
     documents,
     activeDocumentId,
@@ -30,7 +223,6 @@ export default function ContextHouse() {
     linkAdventure,
     unlinkAdventure,
     getActiveDocumentContext,
-    setActiveTab,
   } = useStore()
 
   const activeDoc = documents.find((d) => d.id === activeDocumentId) ?? documents[0]
@@ -41,25 +233,34 @@ export default function ContextHouse() {
   const imgInputRef = useRef<HTMLInputElement>(null)
   const [uploadingPdf, setUploadingPdf] = useState(false)
   const [uploadingImg, setUploadingImg] = useState(false)
+  const [expandedSection, setExpandedSection] = useState<OpenSection>(null)
   const [expandedPdf, setExpandedPdf] = useState<string | null>(null)
   const [lightboxImage, setLightboxImage] = useState<string | null>(null)
   const [showDocPicker, setShowDocPicker] = useState(false)
-  const [showAdventurePicker, setShowAdventurePicker] = useState(false)
 
   const linkedAdventures = linkedAdventureIds
     .map((id) => adventures.find((a) => a.id === id))
     .filter((a) => a != null)
 
-  const totalItems = pdfs.length + images.length + linkedAdventureIds.length
+  const availableAdventures = adventures.filter((a) => !linkedAdventureIds.includes(a.id))
+
+  const toggleSection = (s: Exclude<OpenSection, null>) => {
+    setExpandedSection((prev) => (prev === s ? null : s))
+    if (s !== 'pdf') setExpandedPdf(null)
+  }
 
   const handlePDFUpload = async (files: FileList | null) => {
     if (!files) return
     setUploadingPdf(true)
     for (const file of Array.from(files)) {
       try {
-        const { text, pages } = await uploadPDF(file)
+        const [{ text, pages }, thumbnail] = await Promise.all([
+          uploadPDF(file),
+          renderPDFThumbnail(file, 220),
+        ])
         const id = nanoid()
-        const pdf = { id, name: file.name, text, pages, uploadedAt: Date.now() }
+        const thumbUrl = thumbnail ? await uploadAsset(thumbnail, `${file.name}-thumb`) : undefined
+        const pdf = { id, name: file.name, text, pages, thumbnail: thumbUrl, uploadedAt: Date.now() }
         addPDF(pdf)
 
         if (apiKey && text.length > 100) {
@@ -84,7 +285,8 @@ export default function ContextHouse() {
     for (const file of Array.from(files)) {
       try {
         const dataUrl = await compressImageToDataUrl(file)
-        addImage({ id: nanoid(), name: file.name, dataUrl, uploadedAt: Date.now() })
+        const url = await uploadAsset(dataUrl, file.name)
+        addImage({ id: nanoid(), name: file.name, dataUrl: url, uploadedAt: Date.now() })
       } catch (err) {
         console.error('Image upload failed:', err)
       }
@@ -92,25 +294,15 @@ export default function ContextHouse() {
     setUploadingImg(false)
   }
 
-  const handleDrop = (e: React.DragEvent, type: 'pdf' | 'image') => {
-    e.preventDefault()
-    const files = e.dataTransfer.files
-    if (type === 'pdf') handlePDFUpload(files)
-    else handleImageUpload(files)
-  }
-
-  const availableAdventures = adventures.filter(
-    (a) => !linkedAdventureIds.includes(a.id)
-  )
-
   return (
     <div className="h-full flex flex-col context-house">
+      {/* ── Header ── */}
       <div className="flex-shrink-0 px-6 pt-6 pb-4">
-        <div className="mx-auto max-w-6xl flex items-end justify-between gap-4">
+        <div className="mx-auto max-w-4xl flex items-end justify-between gap-4">
           <div className="min-w-0">
             <h1 className="context-house-header-title">Context House</h1>
             <p className="context-house-header-sub">
-              Research materials scoped to each document — PDFs, images, and exploration threads
+              Research materials scoped to each document
             </p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -120,9 +312,9 @@ export default function ContextHouse() {
                 onClick={() => setShowDocPicker((v) => !v)}
                 className="context-doc-picker-btn"
               >
-                <FileText size={14} />
-                <span className="truncate max-w-[10rem]">{activeDoc?.title ?? 'Select document'}</span>
-                <ChevronDown size={14} className="opacity-50" />
+                <FileText size={13} />
+                <span className="truncate max-w-[8rem]">{activeDoc?.title ?? 'Select document'}</span>
+                <ChevronDown size={13} className="opacity-50" />
               </button>
               {showDocPicker && (
                 <>
@@ -153,281 +345,374 @@ export default function ContextHouse() {
                 </>
               )}
             </div>
-            <button type="button" onClick={() => setActiveTab('write')} className="btn-primary flex items-center gap-2">
-              <PenTool size={14} />
-              Write
-            </button>
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="btn-primary flex items-center gap-2"
+              >
+                <PenTool size={13} />
+                Write
+              </button>
+            )}
           </div>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 pb-6">
-        <div className="mx-auto max-w-6xl space-y-4">
-          {/* PDFs */}
-          <section
-            className="context-section card p-4"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => handleDrop(e, 'pdf')}
-          >
-            <div className="context-section-head">
-              <div className="flex items-center gap-2">
-                <FileText size={16} className="context-section-icon pdf" />
-                <span className="section-title">PDFs</span>
-              </div>
-              <span className="context-section-count">{pdfs.length}</span>
-            </div>
+      {/* ── Three-column layout ── */}
+      <div className="flex-1 overflow-y-auto px-6 pb-6" style={{ scrollbarGutter: 'stable' }}>
+        <div className="mx-auto max-w-4xl">
+          <div className="ctx-three-cols">
 
-            <div className="context-pdf-grid">
-              {pdfs.map((pdf) => (
-                <div key={pdf.id} className="context-pdf-card group">
-                  <button
-                    type="button"
-                    onClick={() => setExpandedPdf(expandedPdf === pdf.id ? null : pdf.id)}
-                    className="context-pdf-thumb"
-                  >
-                    <FileText size={28} className="context-section-icon pdf" />
-                    <span className="context-pdf-name">{pdf.name}</span>
-                    <span className="context-pdf-meta">{pdf.pages} pages</span>
-                    {pdf.summary && <span className="context-pdf-summary">{pdf.summary}</span>}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => removePDF(pdf.id)}
-                    className="context-remove-btn"
-                    aria-label="Remove PDF"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={() => pdfInputRef.current?.click()}
-                className="context-upload-slot"
-                disabled={uploadingPdf}
+            {/* ── PDF Slot ── */}
+            <div className="ctx-slot-wrap">
+              <div
+                className="ctx-slot"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); handlePDFUpload(e.dataTransfer.files) }}
               >
-                {uploadingPdf ? (
-                  <Loader2 size={22} className="animate-spin" />
-                ) : (
-                  <>
-                    <Plus size={22} />
-                    <span>Add PDF</span>
-                  </>
+                {pdfs.length > 0 && (
+                  <div className="ctx-ghost-deck">
+                    {pdfs.slice(0, 5).map((pdf, i) => {
+                      const rots = deckRotations(Math.min(pdfs.length, 5))
+                      return (
+                        <div
+                          key={pdf.id}
+                          className="ctx-ghost-card ctx-ghost-pdf"
+                          style={{ '--rot': `${rots[i]}deg`, zIndex: i } as CSSProperties}
+                        >
+                          {pdf.thumbnail
+                            ? (
+                              <img
+                                src={pdf.thumbnail}
+                                alt=""
+                                className="ctx-ghost-page-thumb"
+                              />
+                            )
+                            : (
+                              <>
+                                <FileText size={16} />
+                                <span className="ctx-ghost-label">
+                                  {pdf.name.replace(/\.pdf$/i, '').slice(0, 12)}
+                                </span>
+                              </>
+                            )
+                          }
+                        </div>
+                      )
+                    })}
+                  </div>
                 )}
-              </button>
-            </div>
-            <input
-              ref={pdfInputRef}
-              type="file"
-              accept=".pdf"
-              multiple
-              className="hidden"
-              onChange={(e) => handlePDFUpload(e.target.files)}
-            />
-          </section>
 
-          {/* Images */}
-          <section
-            className="context-section card p-4"
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => handleDrop(e, 'image')}
-          >
-            <div className="context-section-head">
-              <div className="flex items-center gap-2">
-                <ImageIcon size={16} className="context-section-icon image" />
-                <span className="section-title">Images</span>
-              </div>
-              <span className="context-section-count">{images.length}</span>
-            </div>
-
-            <div className="context-image-grid">
-              {images.map((img) => (
-                <div key={img.id} className="context-image-card group">
+                <div className="ctx-slot-face">
+                  <div className="ctx-slot-top">
+                    <span className="ctx-slot-title">Documents</span>
+                    {pdfs.length > 0 && <span className="ctx-count-pill">{pdfs.length}</span>}
+                  </div>
                   <button
                     type="button"
-                    onClick={() => setLightboxImage(img.dataUrl || null)}
-                    className="context-image-thumb"
+                    className="ctx-plus-btn"
+                    onClick={() => pdfInputRef.current?.click()}
+                    disabled={uploadingPdf}
+                    aria-label="Add PDF"
                   >
-                    {img.dataUrl ? (
-                      <img src={img.dataUrl} alt={img.name} className="context-image-preview" />
-                    ) : (
-                      <div className="context-image-placeholder">
-                        <ImageIcon size={24} />
-                        <span>Preview unavailable</span>
+                    {uploadingPdf
+                      ? <Loader2 size={22} className="animate-spin" />
+                      : <Plus size={26} strokeWidth={2} />
+                    }
+                  </button>
+                  {pdfs.length === 0 && !uploadingPdf && (
+                    <p className="ctx-empty-hint">Drop PDF or click +</p>
+                  )}
+                </div>
+              </div>
+
+              {pdfs.length > 0 && (
+                <button
+                  type="button"
+                  className="ctx-manage-btn"
+                  onClick={() => toggleSection('pdf')}
+                >
+                  <Layers size={10} />
+                  {pdfs.length} doc{pdfs.length !== 1 ? 's' : ''}
+                  <ChevronDown
+                    size={10}
+                    style={{
+                      transform: expandedSection === 'pdf' ? 'rotate(180deg)' : 'rotate(0deg)',
+                      transition: 'transform 160ms ease',
+                    }}
+                  />
+                </button>
+              )}
+
+              {expandedSection === 'pdf' && (
+                <div className="ctx-panel">
+                  {pdfs.map((pdf) => (
+                    <div key={pdf.id}>
+                      <div className="ctx-panel-item">
+                        <button
+                          type="button"
+                          className="ctx-panel-item-main"
+                          onClick={() => setExpandedPdf(expandedPdf === pdf.id ? null : pdf.id)}
+                        >
+                          {pdf.thumbnail
+                            ? <img src={pdf.thumbnail} alt="" className="ctx-panel-pdf-thumb" />
+                            : <FileText size={12} className="ctx-slot-icon-pdf flex-shrink-0" />
+                          }
+                          <p className="ctx-panel-name">{pdf.name.replace(/\.pdf$/i, '')}</p>
+                        </button>
+                        <button
+                          type="button"
+                          className="ctx-panel-delete"
+                          onClick={() => { if (expandedPdf === pdf.id) setExpandedPdf(null); removePDF(pdf.id) }}
+                          aria-label="Remove PDF"
+                        >
+                          <X size={11} />
+                        </button>
                       </div>
-                    )}
-                    <span className="context-image-name">{img.name}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => removeImage(img.id)}
-                    className="context-remove-btn"
-                    aria-label="Remove image"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={() => imgInputRef.current?.click()}
-                className="context-upload-slot context-upload-slot-image"
-                disabled={uploadingImg}
-              >
-                {uploadingImg ? (
-                  <Loader2 size={22} className="animate-spin" />
-                ) : (
-                  <>
-                    <ImageIcon size={22} />
-                    <span>Add Image</span>
-                  </>
-                )}
-              </button>
-            </div>
-            <input
-              ref={imgInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              className="hidden"
-              onChange={(e) => handleImageUpload(e.target.files)}
-            />
-          </section>
-
-          {/* Adventures */}
-          <section className="context-section card p-4">
-            <div className="context-section-head">
-              <div className="flex items-center gap-2">
-                <GitBranch size={16} className="context-section-icon adv" />
-                <span className="section-title">Exploration Adventures</span>
-              </div>
-              <div className="context-section-actions">
-                {availableAdventures.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAdventurePicker((v) => !v)}
-                    className="context-link-btn"
-                  >
-                    <Link2 size={12} />
-                    Link Adventure
-                  </button>
-                )}
-                <span className="context-section-count">{linkedAdventureIds.length}</span>
-              </div>
-            </div>
-
-            {showAdventurePicker && availableAdventures.length > 0 && (
-              <div className="context-inline-picker mb-3">
-                {availableAdventures.map((adv) => {
-                  const nodeCount = adv.nodes.filter((n) => n.data.response).length
-                  return (
-                    <button
-                      key={adv.id}
-                      type="button"
-                      onClick={() => {
-                        linkAdventure(adv.id)
-                        setShowAdventurePicker(false)
-                      }}
-                      className="context-inline-picker-item"
-                    >
-                      <span className="font-medium">{adv.name}</span>
-                      <span className="context-inline-picker-meta">
-                        {nodeCount} nodes · {adv.takeaways.length} takeaways
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-
-            <div className="context-adv-grid">
-              {linkedAdventures.map((adv) => {
-                const nodeCount = adv.nodes.filter((n) => n.data.response).length
-                const previewNode = adv.nodes.find((n) => n.data.response)
-                return (
-                  <div key={adv.id} className="context-adv-card group">
-                    <div className="context-adv-content">
-                      <GitBranch size={16} className="context-section-icon adv" />
-                      <p className="context-adv-name">{adv.name}</p>
-                      <p className="context-adv-meta">
-                        {nodeCount} research nodes · {adv.takeaways.length} takeaways
-                      </p>
-                      {previewNode && (
-                        <p className="context-adv-preview">
-                          {previewNode.data.prompt.slice(0, 100)}…
-                        </p>
-                      )}
-                      {adv.takeaways.length > 0 && (
-                        <ul className="context-adv-takeaways">
-                          {adv.takeaways.slice(0, 2).map((t) => (
-                            <li key={t.id}>• {t.text.slice(0, 60)}{t.text.length > 60 ? '…' : ''}</li>
-                          ))}
-                        </ul>
+                      {expandedPdf === pdf.id && (
+                        <div className="ctx-panel-preview">
+                          {pdf.summary && (
+                            <p className="ctx-panel-summary">{pdf.summary}</p>
+                          )}
+                          <pre className="ctx-panel-text">
+                            {pdf.text.slice(0, 2000)}{pdf.text.length > 2000 ? '…' : ''}
+                          </pre>
+                        </div>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => unlinkAdventure(adv.id)}
-                      className="context-remove-btn"
-                      aria-label="Unlink adventure"
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                )
-              })}
-              {linkedAdventures.length === 0 && (
-                <p className="context-empty-hint col-span-full">
-                  Link exploration threads from Exploration mode to include research in this document&apos;s context
-                </p>
-              )}
-            </div>
-          </section>
-
-          {/* Expanded PDF panel */}
-          {expandedPdf && (() => {
-            const pdf = pdfs.find((p) => p.id === expandedPdf)
-            if (!pdf) return null
-            return (
-              <div className="card context-expanded-pdf animate-slide-up">
-                <div className="context-expanded-pdf-head">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <FileText size={16} className="context-section-icon pdf flex-shrink-0" />
-                    <span className="context-expanded-pdf-title">{pdf.name}</span>
-                    <span className="context-expanded-pdf-meta">{pdf.pages} pages</span>
-                  </div>
-                  <button type="button" onClick={() => setExpandedPdf(null)} className="context-close-btn">
-                    <X size={16} />
-                  </button>
+                  ))}
                 </div>
-                {pdf.summary && (
-                  <div className="context-expanded-pdf-summary">
-                    <p>{pdf.summary}</p>
+              )}
+
+              <input
+                ref={pdfInputRef}
+                type="file"
+                accept=".pdf"
+                multiple
+                className="hidden"
+                onChange={(e) => handlePDFUpload(e.target.files)}
+              />
+            </div>
+
+            {/* ── Image Slot ── */}
+            <div className="ctx-slot-wrap">
+              <div
+                className="ctx-slot"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => { e.preventDefault(); handleImageUpload(e.dataTransfer.files) }}
+              >
+                {images.length > 0 && (
+                  <div className="ctx-ghost-deck">
+                    {images.slice(0, 5).map((img, i) => {
+                      const rots = deckRotations(Math.min(images.length, 5))
+                      return (
+                        <div
+                          key={img.id}
+                          className="ctx-ghost-card ctx-ghost-image"
+                          style={{ '--rot': `${rots[i]}deg`, zIndex: i } as CSSProperties}
+                        >
+                          {img.dataUrl
+                            ? (
+                              <img
+                                src={img.dataUrl}
+                                alt=""
+                                className="ctx-ghost-page-thumb"
+                              />
+                            )
+                            : <ImageIcon size={16} />
+                          }
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
-                <div className="context-expanded-pdf-body">
-                  <pre>
-                    {pdf.text.slice(0, 4000)}
-                    {pdf.text.length > 4000 && '…[truncated]'}
-                  </pre>
+
+                <div className="ctx-slot-face">
+                  <div className="ctx-slot-top">
+                    <span className="ctx-slot-title">Images</span>
+                    {images.length > 0 && <span className="ctx-count-pill">{images.length}</span>}
+                  </div>
+                  <button
+                    type="button"
+                    className="ctx-plus-btn"
+                    onClick={() => imgInputRef.current?.click()}
+                    disabled={uploadingImg}
+                    aria-label="Add Image"
+                  >
+                    {uploadingImg
+                      ? <Loader2 size={22} className="animate-spin" />
+                      : <Plus size={26} strokeWidth={2} />
+                    }
+                  </button>
+                  {images.length === 0 && !uploadingImg && (
+                    <p className="ctx-empty-hint">Drop image or click +</p>
+                  )}
                 </div>
               </div>
-            )
-          })()}
 
-          {totalItems > 0 && (
-            <div className="context-summary-bar">
-              <p>
-                <strong>Active context for {activeDoc?.title}:</strong>{' '}
-                {pdfs.length > 0 && `${pdfs.length} PDF${pdfs.length > 1 ? 's' : ''}`}
-                {pdfs.length > 0 && (images.length > 0 || linkedAdventureIds.length > 0) && ' · '}
-                {images.length > 0 && `${images.length} image${images.length > 1 ? 's' : ''}`}
-                {images.length > 0 && linkedAdventureIds.length > 0 && ' · '}
-                {linkedAdventureIds.length > 0 && `${linkedAdventureIds.length} adventure${linkedAdventureIds.length > 1 ? 's' : ''}`}
-                . Claude uses only this document&apos;s context in Write mode.
-              </p>
+              {images.length > 0 && (
+                <button
+                  type="button"
+                  className="ctx-manage-btn"
+                  onClick={() => toggleSection('image')}
+                >
+                  <Layers size={10} />
+                  {images.length} image{images.length !== 1 ? 's' : ''}
+                  <ChevronDown
+                    size={10}
+                    style={{
+                      transform: expandedSection === 'image' ? 'rotate(180deg)' : 'rotate(0deg)',
+                      transition: 'transform 160ms ease',
+                    }}
+                  />
+                </button>
+              )}
+
+              {expandedSection === 'image' && (
+                <div className="ctx-panel">
+                  {images.map((img) => (
+                    <div key={img.id} className="ctx-panel-item">
+                      <button
+                        type="button"
+                        className="ctx-panel-item-main"
+                        onClick={() => setLightboxImage(img.dataUrl || null)}
+                      >
+                        {img.dataUrl
+                          ? <img src={img.dataUrl} alt={img.name} className="ctx-panel-img-thumb" />
+                          : <ImageIcon size={12} className="ctx-slot-icon-image flex-shrink-0" />
+                        }
+                        <p className="ctx-panel-name">{img.name}</p>
+                      </button>
+                      <button
+                        type="button"
+                        className="ctx-panel-delete"
+                        onClick={() => removeImage(img.id)}
+                        aria-label="Remove image"
+                      >
+                        <X size={11} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <input
+                ref={imgInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(e) => handleImageUpload(e.target.files)}
+              />
             </div>
-          )}
+
+            {/* ── Adventure Slot ── */}
+            <div className="ctx-slot-wrap">
+              <div className="ctx-slot">
+                {linkedAdventures.length > 0 && (
+                  <div className="ctx-ghost-deck">
+                    {linkedAdventures.slice(0, 5).map((adv, i) => {
+                      const rots = deckRotations(Math.min(linkedAdventures.length, 5))
+                      return (
+                        <div
+                          key={adv.id}
+                          className="ctx-ghost-card ctx-ghost-adv"
+                          style={{ '--rot': `${rots[i]}deg`, zIndex: i } as CSSProperties}
+                        >
+                          <AdventurePreviewMemo adv={adv} />
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                <div className="ctx-slot-face">
+                  <div className="ctx-slot-top">
+                    <span className="ctx-slot-title">Adventures</span>
+                    {linkedAdventures.length > 0 && (
+                      <span className="ctx-count-pill">{linkedAdventures.length}</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="ctx-plus-btn"
+                    onClick={() => toggleSection('adventure')}
+                    aria-label="Link adventure"
+                  >
+                    <Plus size={26} strokeWidth={2} />
+                  </button>
+                  {linkedAdventures.length === 0 && (
+                    <p className="ctx-empty-hint">Link exploration threads</p>
+                  )}
+                </div>
+              </div>
+
+              {linkedAdventures.length > 0 && (
+                <button
+                  type="button"
+                  className="ctx-manage-btn"
+                  onClick={() => toggleSection('adventure')}
+                >
+                  <Layers size={10} />
+                  {linkedAdventures.length} adventure{linkedAdventures.length !== 1 ? 's' : ''}
+                  <ChevronDown
+                    size={10}
+                    style={{
+                      transform: expandedSection === 'adventure' ? 'rotate(180deg)' : 'rotate(0deg)',
+                      transition: 'transform 160ms ease',
+                    }}
+                  />
+                </button>
+              )}
+
+              {expandedSection === 'adventure' && (
+                <div className="ctx-panel">
+                  {availableAdventures.length > 0 && (
+                    <div className="ctx-adv-picker-section">
+                      <p className="ctx-adv-picker-label">Link an adventure</p>
+                      {availableAdventures.map((adv) => (
+                        <button
+                          key={adv.id}
+                          type="button"
+                          className="ctx-adv-picker-item"
+                          onClick={() => linkAdventure(adv.id)}
+                        >
+                          <GitBranch size={12} className="ctx-slot-icon-adv flex-shrink-0" />
+                          <p className="ctx-panel-name">{adv.name}</p>
+                          <Plus size={12} className="flex-shrink-0 opacity-40" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {linkedAdventures.length === 0 && availableAdventures.length === 0 && (
+                    <p className="ctx-empty-hint" style={{ padding: '0.65rem' }}>
+                      Create an adventure in Exploration mode first
+                    </p>
+                  )}
+
+                  {linkedAdventures.map((adv) => (
+                    <div key={adv.id} className="ctx-panel-item">
+                      <div className="ctx-panel-item-display">
+                        <GitBranch size={12} className="ctx-slot-icon-adv flex-shrink-0" />
+                        <p className="ctx-panel-name">{adv.name}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="ctx-panel-delete"
+                        onClick={() => unlinkAdventure(adv.id)}
+                        aria-label="Unlink adventure"
+                      >
+                        <X size={11} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+          </div>
         </div>
       </div>
 
@@ -439,7 +724,11 @@ export default function ContextHouse() {
           role="dialog"
           aria-modal="true"
         >
-          <button type="button" className="context-lightbox-close" onClick={() => setLightboxImage(null)}>
+          <button
+            type="button"
+            className="context-lightbox-close"
+            onClick={() => setLightboxImage(null)}
+          >
             <X size={20} />
           </button>
           <img src={lightboxImage} alt="Reference image preview" className="context-lightbox-img" />
