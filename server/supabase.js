@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
+import ws from 'ws'
 
 /** Storage path for a given user's workspace state blob. */
 function statePath(userId) {
@@ -29,6 +30,8 @@ function getClient() {
     const { url, secret } = cfg()
     client = createClient(url, secret, {
       auth: { persistSession: false, autoRefreshToken: false },
+      // Node 20 on Render has no native WebSocket; required for supabase-js RealtimeClient init.
+      realtime: { transport: ws },
     })
   }
   return client

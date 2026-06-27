@@ -16,6 +16,7 @@ function ServerBanner() {
   }, [])
 
   if (serverOk !== false) return null
+  const isProd = import.meta.env.PROD
   return (
     <div
       className="flex-shrink-0 px-4 py-2 text-center text-sm"
@@ -25,13 +26,19 @@ function ServerBanner() {
         color: 'rgba(140,30,30,1)',
       }}
     >
-      Backend server not running — start it with{' '}
-      <code
-        className="rounded px-1 font-mono"
-        style={{ background: 'rgba(200,50,50,0.12)', fontSize: '0.85em' }}
-      >
-        npm run dev
-      </code>
+      {isProd ? (
+        <>Backend unavailable — check Render logs or try again in a moment.</>
+      ) : (
+        <>
+          Backend server not running — start it with{' '}
+          <code
+            className="rounded px-1 font-mono"
+            style={{ background: 'rgba(200,50,50,0.12)', fontSize: '0.85em' }}
+          >
+            npm run dev
+          </code>
+        </>
+      )}
     </div>
   )
 }
