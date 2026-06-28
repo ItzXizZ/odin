@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { Star, Loader2, RotateCcw, ChevronDown, ChevronUp, PenTool, CheckCircle, AlertCircle, TrendingUp } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useStore, type GradeResult } from '../../store/useStore'
+import { useStore, useHasApiKey, type GradeResult } from '../../store/useStore'
 import { syncChat } from '../../lib/claude'
 
 export default function GradeMode() {
   const { documents, activeDocumentId, rubric, gradeResult, isGrading, apiKey, setRubric, setGradeResult, setIsGrading, setActiveTab } = useStore()
+  const hasApiKey = useHasApiKey()
 
   const [expandedCriterion, setExpandedCriterion] = useState<number | null>(null)
   const [error, setError] = useState('')
@@ -22,7 +23,7 @@ export default function GradeMode() {
       setError('No document to grade. Write something first.')
       return
     }
-    if (!apiKey) {
+    if (!hasApiKey) {
       setError('No API key set. Go to Settings.')
       return
     }
@@ -142,7 +143,7 @@ Respond with ONLY valid JSON in this exact format:
         <div className="flex items-center gap-4">
           <button
             onClick={handleGrade}
-            disabled={isGrading || !plainText || !apiKey}
+            disabled={isGrading || !plainText || !hasApiKey}
             className="btn-primary flex items-center gap-2 disabled:opacity-40 px-6 py-3"
           >
             {isGrading ? (

@@ -17,7 +17,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 import { Plus, Trash2, Sparkles, Maximize2, ChevronLeft, RefreshCw, Loader2 } from 'lucide-react'
 import { nanoid } from 'nanoid'
-import { useStore, type ExplorationNodeData } from '../../store/useStore'
+import { useStore, useHasApiKey, hasUsableKey, type ExplorationNodeData } from '../../store/useStore'
 import { streamChat, syncChat } from '../../lib/claude'
 import {
   registerOnboardingCommand,
@@ -130,7 +130,7 @@ async function generateExcerptQuestions(
   context: string,
   apiKey: string
 ): Promise<string[]> {
-  if (!apiKey) return FALLBACK_EXCERPT_QUESTIONS
+  if (!apiKey && !hasUsableKey()) return FALLBACK_EXCERPT_QUESTIONS
   try {
     const raw = await syncChat(
       [
@@ -176,6 +176,7 @@ function buildMessageChain(
 }
 
 export default function ExplorationMode() {
+  const hasApiKey = useHasApiKey()
   const {
     adventures,
     activeAdventureId,
@@ -672,7 +673,7 @@ export default function ExplorationMode() {
   // has real content — so it reads meaningfully in the Context House picker.
   const labelingRef = useRef(false)
   const maybeLabelAdventure = useCallback(async () => {
-    if (!apiKey || labelingRef.current) return
+    if (!hasApiKey || labelingRef.current) return
     const s = useStore.getState()
     const advId = s.activeAdventureId
     const adv = s.adventures.find((a) => a.id === advId)
@@ -711,7 +712,7 @@ export default function ExplorationMode() {
     } finally {
       labelingRef.current = false
     }
-  }, [apiKey])
+  }, [apiKey, hasApiKey])
 
   const removeNodesById = useCallback(
     (ids: string[]) => {
@@ -842,7 +843,7 @@ export default function ExplorationMode() {
         return updated
       })
 
-      if (!apiKey) {
+      if (!hasApiKey) {
         setNodes((prev) => {
           const updated = prev.map((n) =>
             n.id === nodeId ? { ...n, data: { ...n.data, response: '⚠️ No API key set.', isLoading: false } } : n
@@ -985,7 +986,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         }
       )
     },
-    [apiKey, setNodes, persistNodes, getFullContext, captureBoard]
+    [apiKey, hasApiKey, setNodes, persistNodes, getFullContext, captureBoard]
   )
 
   const onConnect = useCallback(
@@ -1019,7 +1020,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
       id: string,
       req: { query: string; parentId?: string; excerpt?: string; method?: 'search' | 'generate' }
     ) => {
-      if (!apiKey) return
+      if (!hasApiKey) return
       const parentNode = req.parentId ? nodesRef.current.find((n) => n.id === req.parentId) : null
       const status =
         req.method === 'search'
@@ -1137,7 +1138,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         })
       }
     },
-    [apiKey, setNodes, persistNodes, getFullContext]
+    [apiKey, hasApiKey, setNodes, persistNodes, getFullContext]
   )
   runVisualGenerationRef.current = runVisualGeneration
 
@@ -1297,7 +1298,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
       setPrompt('')
 
       // Stream response from Claude
-      if (!apiKey) {
+      if (!hasApiKey) {
         updateNodeResponse(id, '⚠️ No API key set. Go to Settings to add your Anthropic key.', false)
         setNodes((prev) => {
           const updated = prev.map((n) =>
@@ -1598,7 +1599,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
     return () => {
       cancelled = true
     }
-  }, [pendingExcerpt, apiKey])
+  }, [pendingExcerpt, apiKey, hasApiKey])
 
   // Ask one of the suggested questions about the current highlight.
   const submitExcerptQuestion = (question: string) => {

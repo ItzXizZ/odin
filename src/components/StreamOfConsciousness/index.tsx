@@ -2,13 +2,14 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { Mic, MicOff, Type, HelpCircle, Trash2, PenTool, Loader2, Plus } from 'lucide-react'
 import { nanoid } from 'nanoid'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useStore } from '../../store/useStore'
+import { useStore, useHasApiKey } from '../../store/useStore'
 import { streamChat, syncChat } from '../../lib/claude'
 
 type Mode = 'audio' | 'text'
 
 export default function StreamOfConsciousness() {
   const { apiKey, sessions, currentTranscript, addSession, updateCurrentTranscript, setActiveTab } = useStore()
+  const hasApiKey = useHasApiKey()
 
   const [mode, setMode] = useState<Mode>('audio')
   const [isRecording, setIsRecording] = useState(false)
@@ -24,7 +25,7 @@ export default function StreamOfConsciousness() {
 
   const generateQuestions = useCallback(
     async (text: string) => {
-      if (!text.trim() || !apiKey) return
+      if (!text.trim() || !hasApiKey) return
       setIsGenerating(true)
       setQuestionBuffer('')
 
@@ -62,7 +63,7 @@ export default function StreamOfConsciousness() {
         setIsGenerating(false)
       }
     },
-    [apiKey]
+    [apiKey, hasApiKey]
   )
 
   const scheduleQuestionGeneration = useCallback(

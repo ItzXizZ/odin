@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import { useTutorial } from '../../lib/tutorial'
 import { nanoid } from 'nanoid'
-import { useStore } from '../../store/useStore'
+import { useStore, useHasApiKey } from '../../store/useStore'
 import type { Adventure } from '../../store/useStore'
 import { uploadPDF, syncChat } from '../../lib/claude'
 import { compressImageToDataUrl } from '../../lib/image'
@@ -226,6 +226,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
     unlinkAdventure,
     getActiveDocumentContext,
   } = useStore()
+  const hasApiKey = useHasApiKey()
 
   const activeDoc = documents.find((d) => d.id === activeDocumentId) ?? documents[0]
   const ctx = getActiveDocumentContext()
@@ -273,7 +274,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
         const pdf = { id, name: file.name, text, pages, thumbnail: thumbUrl, uploadedAt: Date.now() }
         addPDF(pdf)
 
-        if (apiKey && text.length > 100) {
+        if (hasApiKey && text.length > 100) {
           const summary = await syncChat(
             [{ role: 'user', content: `Summarize this document in 2-3 sentences for writing context:\n\n${text.slice(0, 4000)}` }],
             'You are a research assistant. Provide concise, useful summaries.',

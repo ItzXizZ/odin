@@ -3,17 +3,22 @@ import { motion } from 'framer-motion'
 import Layout from './components/Layout'
 import LoginScreen from './components/LoginScreen'
 import { AuthProvider, useAuth } from './lib/auth'
+import { useStore } from './store/useStore'
 import logo from './components/logo.png'
 
 function ServerBanner() {
   const [serverOk, setServerOk] = useState<boolean | null>(null)
+  const setServerHasKey = useStore((s) => s.setServerHasKey)
 
   useEffect(() => {
     fetch('/api/health')
       .then((r) => r.json())
-      .then((d) => setServerOk(d.ok))
+      .then((d) => {
+        setServerOk(d.ok)
+        setServerHasKey(!!d.hasKey)
+      })
       .catch(() => setServerOk(false))
-  }, [])
+  }, [setServerHasKey])
 
   if (serverOk !== false) return null
   const isProd = import.meta.env.PROD

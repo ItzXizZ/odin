@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Loader2, Sparkles, X, Check, RefreshCw, ArrowRight } from 'lucide-react'
 import { syncChat } from '../../lib/claude'
+import { useHasApiKey } from '../../store/useStore'
 
 interface TunnelVisionProps {
   sentence: string
@@ -60,6 +61,7 @@ export default function TunnelVision({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const promptRef = useRef<HTMLTextAreaElement>(null)
+  const hasApiKey = useHasApiKey()
 
   useEffect(() => {
     promptRef.current?.focus()
@@ -67,7 +69,7 @@ export default function TunnelVision({
 
   const generate = useCallback(
     async (mode: 'fresh' | 'refine') => {
-      if (!apiKey) {
+      if (!hasApiKey) {
         setError('No API key set.')
         return
       }
@@ -110,7 +112,7 @@ Instruction: ${baseInstruction}${refineNote}`
         setLoading(false)
       }
     },
-    [apiKey, instruction, styleGuide, researchContext, contextBefore, contextAfter, sentence, selected, options, feedback]
+    [apiKey, hasApiKey, instruction, styleGuide, researchContext, contextBefore, contextAfter, sentence, selected, options, feedback]
   )
 
   return (

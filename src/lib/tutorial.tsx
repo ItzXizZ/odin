@@ -19,7 +19,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { useStore, type AppTab } from '../store/useStore'
+import { useStore, hasUsableKey, type AppTab } from '../store/useStore'
 import { syncChat } from './claude'
 import {
   markOnboarded,
@@ -81,7 +81,7 @@ export async function generateResearchSuggestions(
   field: string,
   apiKey: string
 ): Promise<string[]> {
-  if (!apiKey || !field.trim()) return fallbackSuggestions(field)
+  if ((!apiKey && !hasUsableKey()) || !field.trim()) return fallbackSuggestions(field)
   try {
     const raw = await syncChat(
       [

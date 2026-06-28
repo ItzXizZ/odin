@@ -294,7 +294,10 @@ export interface GradeResult {
 interface AppState {
   // Navigation
   activeTab: AppTab
+  /** User-supplied key (in-app Settings). Empty means "use the server's key". */
   apiKey: string
+  /** Whether the backend has its own ANTHROPIC_API_KEY (from /api/health). */
+  serverHasKey: boolean
   showSettings: boolean
 
   // Stream of Consciousness
@@ -325,6 +328,7 @@ interface AppState {
   // Actions
   setActiveTab: (tab: AppTab) => void
   setApiKey: (key: string) => void
+  setServerHasKey: (v: boolean) => void
   setShowSettings: (v: boolean) => void
 
   addPDF: (pdf: PDFDocument) => void
@@ -403,6 +407,7 @@ export const useStore = create<AppState>()(
       // its own server-side ANTHROPIC_API_KEY (see server.js). Users may still
       // paste a personal key via the in-app Settings panel.
       apiKey: '',
+      serverHasKey: false,
       showSettings: false,
 
       sessions: [],
@@ -434,6 +439,7 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
 
       setActiveTab: (tab) => set({ activeTab: tab }),
       setApiKey: (key) => set({ apiKey: key }),
+      setServerHasKey: (v) => set({ serverHasKey: v }),
       setShowSettings: (v) => set({ showSettings: v }),
 
       addPDF: (pdf) =>
@@ -941,6 +947,19 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
     }
   )
 )
+
+/**
+ * A usable key exists if the user supplied one OR the backend holds its own.
+ * The frontend never needs the actual key value — when apiKey is empty the
+ * server falls back to its server-side ANTHROPIC_API_KEY.
+ */
+export function hasUsableKey(): boolean {
+  const s = useStore.getState()
+  return !!s.apiKey || s.serverHasKey
+}
+
+/** Reactive variant for components. */
+export const useHasApiKey = () => useStore((s) => !!s.apiKey || s.serverHasKey)
 
 // Dev-only handle for inspecting/driving the store from the console.
 if (import.meta.env.DEV) {

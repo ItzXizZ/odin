@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { diffWords } from 'diff'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useStore } from '../../store/useStore'
+import { useStore, useHasApiKey } from '../../store/useStore'
 import { streamChat } from '../../lib/claude'
 import { compileStyleGuide, buildAgentSystemPrompt, parseEditResponse, parseAgentResponse, parseDraftResponse, applyEdits, type ParsedEdit } from '../../lib/style'
 import {
@@ -212,6 +212,7 @@ export default function WriteMode() {
     styleRules,
     reinforceStyleRules, addStyleRule, editStyleRule, deleteStyleRule,
   } = useStore()
+  const hasApiKey = useHasApiKey()
 
   const activeDoc = documents.find((d) => d.id === activeDocumentId) ?? documents[0]
   const documentTitle = activeDoc?.title ?? 'Untitled'
@@ -657,7 +658,7 @@ export default function WriteMode() {
    */
   const maintainStyleNetwork = useCallback(
     async (instruction: string) => {
-      if (!apiKey) return
+      if (!hasApiKey) return
       try {
         const rules = useStore.getState().styleRules
         const conflict = pendingConflictRef.current
@@ -703,12 +704,12 @@ export default function WriteMode() {
         // Network upkeep must never interrupt the writing flow.
       }
     },
-    [apiKey, applyStyleActions, postStyleMessage]
+    [apiKey, hasApiKey, applyStyleActions, postStyleMessage]
   )
 
   const handleAIAssist = useCallback(async (override?: string) => {
     const instruction = (typeof override === 'string' ? override : aiPrompt).trim()
-    if (!instruction || !apiKey || !editor) return
+    if (!instruction || !hasApiKey || !editor) return
 
     const userEntryId = Date.now().toString()
     updateThreadMessages((prev) => [...prev, { id: userEntryId, role: 'user', content: instruction }])
@@ -920,7 +921,7 @@ INSTRUCTION: ${instruction}`
     // Background turn: let Claude decide if this was stylistic feedback and
     // update the Stylism network (reinforce / create / flag conflicts).
     void maintainStyleNetwork(instruction)
-  }, [aiPrompt, apiKey, editor, getFullContext, styleRules, attachedSelection, enterReview, maintainStyleNetwork, updateThreadMessages])
+  }, [aiPrompt, apiKey, hasApiKey, editor, getFullContext, styleRules, attachedSelection, enterReview, maintainStyleNetwork, updateThreadMessages])
 
   /* ── Onboarding command hooks ── */
   const handleAIAssistRef = useRef(handleAIAssist)
@@ -1467,7 +1468,7 @@ INSTRUCTION: ${instruction}`
                       type="button"
                       className="glass-btn assistant-send-btn"
                       onClick={() => handleAIAssist()}
-                      disabled={!aiPrompt.trim() || !apiKey}
+                      disabled={!aiPrompt.trim() || !hasApiKey}
                       title="Send message"
                       aria-label="Send message"
                     >
