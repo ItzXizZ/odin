@@ -9,21 +9,32 @@ import ReactFlow, {
   useEdgesState,
   type Connection,
   type Node,
+  type NodeChange,
   type Edge,
   type ReactFlowInstance,
   BackgroundVariant,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { Plus, Trash2, PenTool, Sparkles, LayoutGrid, ChevronLeft, RefreshCw } from 'lucide-react'
+import { Plus, Trash2, Sparkles, Maximize2, ChevronLeft, RefreshCw, Loader2 } from 'lucide-react'
 import { nanoid } from 'nanoid'
 import { useStore, type ExplorationNodeData } from '../../store/useStore'
-import { streamChat } from '../../lib/claude'
+import { streamChat, syncChat } from '../../lib/claude'
+import {
+  registerOnboardingCommand,
+  getOnboardingTopic,
+} from '../../lib/onboarding'
 import { researchQuery } from '../../lib/research'
 import ExplorationNode from './ExplorationNode'
 import FloatingEdge from './FloatingEdge'
+import { sanitizeNodesForStore } from './nodePersistence'
+import {
+  mergeEmbedScrollIntoNodes,
+  resolveEmbedScrollTop,
+  syncEmbedScrollFromNodes,
+  writeEmbedScrollEntry,
+} from '../../lib/embedScrollStorage'
 import LiveSourceFeed from './LiveSourceFeed'
 import AdventureMenu from './AdventureMenu'
-import { layoutTree } from './layout'
 import { aggregateSources, extractSourcesFromText, mergeSources, type SourceRef } from '../../lib/sources'
 import { routeExploration } from '../../lib/route'
 import { generateVisual, isVisualChoice, type VisualMessage } from '../../lib/visual'
@@ -32,6 +43,115 @@ import { uploadAsset } from '../../lib/cloud'
 const nodeTypes = { exploration: ExplorationNode }
 const edgeTypes = { floating: FloatingEdge }
 const defaultEdgeOptions = { type: 'floating' }
+
+// Approximate block footprint used for collision-free placement.
+const NODE_W = 380
+const NODE_H = 220
+// Visual breathing room kept between neighbouring blocks.
+const PLACEMENT_GAP = 26
+// Fine search granularity — small steps let new blocks pack in snugly.
+const PLACEMENT_GRID = 24
+
+type XY = { x: number; y: number }
+
+/**
+ * Find an open spot for a new block near `preferred` without overlapping any
+ * existing block. Existing blocks never move — we keep the newcomer as close to
+ * its preferred spot as possible, nudging straight down in small steps first
+ * (so siblings stack neatly), then trying adjacent columns.
+ */
+function findOpenSpot(preferred: XY, nodes: Node<ExplorationNodeData>[], selfId?: string): XY {
+  const others = nodes
+    .filter((n) => n.id !== selfId)
+    .map((n) => ({
+      x: n.position.x,
+      y: n.position.y,
+      w: (n as any).width ?? NODE_W,
+      h: (n as any).height ?? NODE_H,
+    }))
+
+  const collides = (p: XY) =>
+    others.some(
+      (o) =>
+        !(
+          p.x + NODE_W + PLACEMENT_GAP <= o.x ||
+          p.x >= o.x + o.w + PLACEMENT_GAP ||
+          p.y + NODE_H + PLACEMENT_GAP <= o.y ||
+          p.y >= o.y + o.h + PLACEMENT_GAP
+        )
+    )
+
+  if (!collides(preferred)) return preferred
+
+  const stepX = NODE_W + PLACEMENT_GAP
+  // Search column-by-column, scanning downward in fine steps so the block lands
+  // just below whatever it collided with rather than a full row away.
+  for (let col = 0; col < 6; col++) {
+    const x = preferred.x + col * stepX
+    for (let dy = PLACEMENT_GRID; dy <= 2600; dy += PLACEMENT_GRID) {
+      if (!collides({ x, y: preferred.y + dy })) return { x, y: preferred.y + dy }
+    }
+  }
+  // Fallback: drop it just below everything.
+  const maxBottom = others.reduce((m, o) => Math.max(m, o.y + o.h), preferred.y)
+  return { x: preferred.x, y: maxBottom + PLACEMENT_GAP }
+}
+
+const FALLBACK_EXCERPT_QUESTIONS = [
+  'Why does this matter?',
+  'Can you give an example?',
+  'How does this actually work?',
+]
+
+/** Pull a JSON string array out of a model reply, tolerant of fences/prose. */
+function parseStringArray(raw: string): string[] {
+  const t = raw.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+  const a = t.indexOf('[')
+  const b = t.lastIndexOf(']')
+  if (a !== -1 && b > a) {
+    try {
+      const arr = JSON.parse(t.slice(a, b + 1))
+      if (Array.isArray(arr)) {
+        return arr.filter((x) => typeof x === 'string').map((s) => s.trim()).filter(Boolean)
+      }
+    } catch {
+      /* fall through to line parsing */
+    }
+  }
+  return t
+    .split('\n')
+    .map((l) => l.replace(/^[-*\d.)\s"]+/, '').replace(/"$/, '').trim())
+    .filter(Boolean)
+}
+
+/** Ask the model for a few short follow-up questions about a highlighted excerpt. */
+async function generateExcerptQuestions(
+  excerpt: string,
+  context: string,
+  apiKey: string
+): Promise<string[]> {
+  if (!apiKey) return FALLBACK_EXCERPT_QUESTIONS
+  try {
+    const raw = await syncChat(
+      [
+        {
+          role: 'user',
+          content: `A reader highlighted this excerpt:\n"${excerpt}"\n\nFrom this passage:\n"""${context.slice(
+            0,
+            1500
+          )}"""\n\nSuggest exactly 3 short, specific follow-up questions (about 4–8 words each) they might want to explore about the highlight. Reply ONLY as a JSON array of 3 strings.`,
+        },
+      ],
+      'You propose concise, curious follow-up questions about a highlighted snippet. Reply with only a JSON array of strings.',
+      apiKey,
+      200
+    )
+    const qs = parseStringArray(raw).slice(0, 3)
+    return qs.length ? qs : FALLBACK_EXCERPT_QUESTIONS
+  } catch {
+    return FALLBACK_EXCERPT_QUESTIONS
+  }
+}
 
 function buildMessageChain(
   nodes: Node<ExplorationNodeData>[],
@@ -64,7 +184,6 @@ export default function ExplorationMode() {
     setExplorationEdges,
     updateNodeResponse,
     setAdventureThumbnail,
-    setActiveTab,
     getFullContext,
   } = useStore()
 
@@ -79,6 +198,20 @@ export default function ExplorationMode() {
   const flowWrapperRef = useRef<HTMLDivElement>(null)
   const promptInputRef = useRef<HTMLInputElement>(null)
   const [rf, setRf] = useState<ReactFlowInstance | null>(null)
+  const rfRef = useRef<ReactFlowInstance | null>(null)
+  useEffect(() => {
+    rfRef.current = rf
+  }, [rf])
+
+  // Pan (keeping zoom) so a freshly placed block sits comfortably in view.
+  const focusPosition = useCallback((pos: XY) => {
+    setTimeout(() => {
+      const inst = rfRef.current
+      if (!inst) return
+      const zoom = Math.min(1, Math.max(0.6, inst.getZoom()))
+      inst.setCenter(pos.x + NODE_W / 2, pos.y + NODE_H / 2, { zoom, duration: 600 })
+    }, 90)
+  }, [])
 
   // Excerpt captured from a highlight, shown above the bottom input
   const [pendingExcerpt, setPendingExcerpt] = useState<{
@@ -88,6 +221,9 @@ export default function ExplorationMode() {
   } | null>(null)
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeKind?: string } | null>(null)
+  // AI-suggested follow-up questions for the currently highlighted excerpt.
+  const [excerptSuggestions, setExcerptSuggestions] = useState<string[]>([])
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false)
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [linkPopup, setLinkPopup] = useState<{
     x: number
@@ -120,6 +256,8 @@ export default function ExplorationMode() {
   const nodesRef = useRef(nodes)
   const edgesRef = useRef(edges)
   const prevCountRef = useRef(0)
+  /** Which adventure the local canvas belongs to — guards stale persists after switching. */
+  const boardAdventureIdRef = useRef<string | null>(activeAdventureId)
   useEffect(() => {
     nodesRef.current = nodes
   }, [nodes])
@@ -127,37 +265,246 @@ export default function ExplorationMode() {
     edgesRef.current = edges
   }, [edges])
 
-  // Load the selected adventure's whiteboard when switching.
-  // Clear any isLoading flags that were left mid-stream (e.g. adventure was switched
-  // while a node was streaming — the completion callback would land on the wrong node
-  // list and never clear the flag in the store).
-  useEffect(() => {
-    if (!activeAdventureId) return
-    const cleanNodes = (activeAdventure?.nodes ?? []).map((n: any) =>
-      n.data?.isLoading
-        ? { ...n, data: { ...n.data, isLoading: false, response: n.data.response || '⚠️ Loading was interrupted. Ask again to retry.' } }
-        : n
-    )
-    setNodes(cleanNodes as any)
-    setEdges(activeAdventure?.edges ?? [])
+  const nodesPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const embedScrollPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const cancelPendingPersists = useCallback(() => {
+    if (nodesPersistTimerRef.current) {
+      clearTimeout(nodesPersistTimerRef.current)
+      nodesPersistTimerRef.current = null
+    }
+    if (embedScrollPersistTimerRef.current) {
+      clearTimeout(embedScrollPersistTimerRef.current)
+      embedScrollPersistTimerRef.current = null
+    }
+  }, [])
+
+  const resetExplorationUiState = useCallback(() => {
     setSelectedNodeId(null)
     setPendingExcerpt(null)
     setContextMenu(null)
     setPrompt('')
-    prevCountRef.current = cleanNodes.length
-  }, [activeAdventureId]) // eslint-disable-line react-hooks/exhaustive-deps
+    setExcerptSuggestions([])
+    setSuggestionsLoading(false)
+    setSourcesOpen(false)
+    setLinkPopup(null)
+    useStore.getState().setLiveSourceContext('')
+  }, [])
 
   const persistNodes = useCallback(
     (updated: Node<ExplorationNodeData>[]) => {
-      setExplorationNodes(updated as any)
+      if (!useStore.persist.hasHydrated()) return
+      const boardId = boardAdventureIdRef.current
+      const activeId = useStore.getState().activeAdventureId
+      if (!boardId || boardId !== activeId) return
+      const prevCount =
+        useStore.getState().adventures.find((a) => a.id === boardId)?.nodes?.length ?? 0
+      if (updated.length === 0 && prevCount > 0) return
+      setExplorationNodes(sanitizeNodesForStore(updated) as any)
     },
     [setExplorationNodes]
   )
 
+  const persistEdges = useCallback(
+    (updated: Edge[]) => {
+      if (!useStore.persist.hasHydrated()) return
+      const boardId = boardAdventureIdRef.current
+      const activeId = useStore.getState().activeAdventureId
+      if (!boardId || boardId !== activeId) return
+      setExplorationEdges(updated as any)
+    },
+    [setExplorationEdges]
+  )
+
+  const applyAdventureBoard = useCallback(
+    (adventureId: string) => {
+      if (!useStore.persist.hasHydrated()) return
+      cancelPendingPersists()
+      boardAdventureIdRef.current = adventureId
+
+      const adventure = useStore.getState().adventures.find((a) => a.id === adventureId)
+      if (!adventure) return
+
+      const rawNodes = adventure.nodes.map((n: any) =>
+        n.data?.isLoading
+          ? {
+              ...n,
+              data: {
+                ...n.data,
+                isLoading: false,
+                response: n.data.response || '⚠️ Loading was interrupted. Ask again to retry.',
+              },
+            }
+          : n
+      )
+      const cleanNodes = mergeEmbedScrollIntoNodes(
+        rawNodes as Node<ExplorationNodeData>[],
+        adventureId
+      )
+      const cleanEdges = adventure.edges ?? []
+
+      nodesRef.current = cleanNodes as any
+      edgesRef.current = cleanEdges
+      setNodes(cleanNodes as any)
+      setEdges(cleanEdges)
+      resetExplorationUiState()
+      prevCountRef.current = cleanNodes.length
+    },
+    [cancelPendingPersists, resetExplorationUiState, setNodes, setEdges]
+  )
+
+  // Load the board only after persisted state has hydrated (avoids empty boot snapshot).
+  const loadAdventureBoard = useCallback(() => {
+    if (!useStore.persist.hasHydrated() || !activeAdventureId) return
+    applyAdventureBoard(activeAdventureId)
+  }, [activeAdventureId, applyAdventureBoard])
+
+  useEffect(() => {
+    if (useStore.persist.hasHydrated()) {
+      loadAdventureBoard()
+      return
+    }
+    return useStore.persist.onFinishHydration(() => {
+      loadAdventureBoard()
+    })
+  }, [loadAdventureBoard])
+
+  const flushEmbedScroll = useCallback(() => {
+    if (!useStore.persist.hasHydrated()) return
+    const boardId = boardAdventureIdRef.current
+    if (!boardId || boardId !== useStore.getState().activeAdventureId) return
+    syncEmbedScrollFromNodes(boardId, nodesRef.current)
+    persistNodes(nodesRef.current)
+  }, [persistNodes])
+
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') flushEmbedScroll()
+    }
+    window.addEventListener('beforeunload', flushEmbedScroll)
+    document.addEventListener('visibilitychange', onHide)
+    return () => {
+      window.removeEventListener('beforeunload', flushEmbedScroll)
+      document.removeEventListener('visibilitychange', onHide)
+      if (embedScrollPersistTimerRef.current) clearTimeout(embedScrollPersistTimerRef.current)
+    }
+  }, [flushEmbedScroll])
+
+  const handleNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      onNodesChange(changes)
+      const finishedMove = changes.some(
+        (c) => c.type === 'position' && 'dragging' in c && c.dragging === false
+      )
+      if (!finishedMove) return
+      if (nodesPersistTimerRef.current) clearTimeout(nodesPersistTimerRef.current)
+      nodesPersistTimerRef.current = setTimeout(() => {
+        persistNodes(nodesRef.current)
+      }, 0)
+    },
+    [onNodesChange, persistNodes]
+  )
+
+  /**
+   * Once a freshly created block finishes loading and its real measured size is
+   * known, nudge it out of any overlap so its text never sits on top of a block
+   * it references. Only this block moves; existing blocks stay put. Uses real
+   * measured dimensions (a finished answer can be far taller than the estimate).
+   */
+  const settleNodePosition = useCallback(
+    (id: string) => {
+      setNodes((prev) => {
+        const me = prev.find((n) => n.id === id)
+        if (!me) return prev
+        const mw = (me as any).width ?? NODE_W
+        const mh = (me as any).height ?? NODE_H
+        const others = prev
+          .filter((n) => n.id !== id)
+          .map((n) => ({
+            x: n.position.x,
+            y: n.position.y,
+            w: (n as any).width ?? NODE_W,
+            h: (n as any).height ?? NODE_H,
+          }))
+        const collides = (p: XY) =>
+          others.some(
+            (o) =>
+              !(
+                p.x + mw + PLACEMENT_GAP <= o.x ||
+                p.x >= o.x + o.w + PLACEMENT_GAP ||
+                p.y + mh + PLACEMENT_GAP <= o.y ||
+                p.y >= o.y + o.h + PLACEMENT_GAP
+              )
+          )
+        if (!collides(me.position)) return prev
+        const start = me.position
+        const stepX = mw + PLACEMENT_GAP
+        let found: XY | null = null
+        for (let col = 0; col < 6 && !found; col++) {
+          const x = start.x + col * stepX
+          for (let dy = 0; dy <= 3200; dy += PLACEMENT_GRID) {
+            if (!collides({ x, y: start.y + dy })) {
+              found = { x, y: start.y + dy }
+              break
+            }
+          }
+        }
+        if (!found) return prev
+        const target = found
+        const updated = prev.map((n) => (n.id === id ? { ...n, position: target } : n))
+        persistNodes(updated)
+        return updated
+      })
+    },
+    [setNodes, persistNodes]
+  )
+
+  const updateEmbedScroll = useCallback(
+    (nodeId: string, scrollTop: number, embedUrl?: string) => {
+      if (activeAdventureId) writeEmbedScrollEntry(activeAdventureId, nodeId, scrollTop, embedUrl)
+      setNodes((prev) => {
+        const node = prev.find((n) => n.id === nodeId)
+        if (!node || node.data.embedScrollTop === scrollTop) return prev
+        return prev.map((n) =>
+          n.id === nodeId ? { ...n, data: { ...n.data, embedScrollTop: scrollTop } } : n
+        )
+      })
+      if (embedScrollPersistTimerRef.current) clearTimeout(embedScrollPersistTimerRef.current)
+      embedScrollPersistTimerRef.current = setTimeout(() => {
+        if (activeAdventureId) syncEmbedScrollFromNodes(activeAdventureId, nodesRef.current)
+        persistNodes(nodesRef.current)
+      }, 600)
+    },
+    [activeAdventureId, setNodes, persistNodes]
+  )
+
+  const handleEmbedExcerpt = useCallback(
+    (nodeId: string, excerpt: { text: string; ratio: number }) => {
+      setPendingExcerpt({ sourceId: nodeId, text: excerpt.text, ratio: excerpt.ratio })
+      setSelectedNodeId(nodeId)
+      setContextMenu(null)
+      setTimeout(() => promptInputRef.current?.focus(), 0)
+    },
+    []
+  )
+
   const flushAdventureToStore = useCallback(() => {
-    setExplorationNodes(nodesRef.current as any)
+    const boardId = boardAdventureIdRef.current
+    const activeId = useStore.getState().activeAdventureId
+    if (!boardId || boardId !== activeId) return
+    setExplorationNodes(sanitizeNodesForStore(nodesRef.current) as any)
     setExplorationEdges(edgesRef.current as any)
   }, [setExplorationNodes, setExplorationEdges])
+
+  const createFreshAdventure = useCallback(() => {
+    flushAdventureToStore()
+    const newId = useStore.getState().createAdventure()
+    applyAdventureBoard(newId)
+    setTimeout(() => {
+      rfRef.current?.zoomTo(0.55, { duration: 600 })
+    }, 60)
+    return newId
+  }, [flushAdventureToStore, applyAdventureBoard])
 
   const handleLinkClick = useCallback(
     (sourceNodeId: string, url: string, x: number, y: number, linkText?: string) => {
@@ -186,11 +533,13 @@ export default function ExplorationMode() {
       const sourceNode = sourceNodeId ? nodesRef.current.find((n) => n.id === sourceNodeId) : null
       const pw = (sourceNode as any)?.width ?? 420
 
-      const pos = sourceNode
-        ? { x: sourceNode.position.x + pw + 90, y: sourceNode.position.y }
+      const preferred = sourceNode
+        ? { x: sourceNode.position.x + pw + 56, y: sourceNode.position.y }
         : rf
         ? rf.project({ x: window.innerWidth / 2 - 280, y: window.innerHeight / 2 - 240 })
-        : { x: 200 + Math.random() * 200, y: 200 + nodesRef.current.length * 80 }
+        : { x: 200 + Math.random() * 160, y: 200 + nodesRef.current.length * 80 }
+      const pos = findOpenSpot(preferred, nodesRef.current, id)
+      focusPosition(pos)
 
       const newNode: Node<ExplorationNodeData> = {
         id,
@@ -252,19 +601,21 @@ export default function ExplorationMode() {
             counts[e.source] = (counts[e.source] || 0) + 1
             counts[e.target] = (counts[e.target] || 0) + 1
           })
-          setNodes((prevNodes) =>
-            prevNodes.map((n) => ({
+          setNodes((prevNodes) => {
+            const updated = prevNodes.map((n) => ({
               ...n,
               data: { ...n.data, connectionCount: counts[n.id] || 0 },
             }))
-          )
+            persistNodes(updated)
+            return updated
+          })
           return updatedEdges
         })
       }
 
       setLinkPopup(null)
     },
-    [rf, setNodes, setEdges, setExplorationEdges, persistNodes]
+    [rf, setNodes, setEdges, setExplorationEdges, persistNodes, focusPosition]
   )
 
   // Amplify trackpad pinch-to-zoom (~3× more sensitive than React Flow's default).
@@ -317,6 +668,51 @@ export default function ExplorationMode() {
     }, 2000)
   }, [activeAdventureId, setAdventureThumbnail])
 
+  // Auto-name a still-default adventure ("Adventure N") by its topic once it
+  // has real content — so it reads meaningfully in the Context House picker.
+  const labelingRef = useRef(false)
+  const maybeLabelAdventure = useCallback(async () => {
+    if (!apiKey || labelingRef.current) return
+    const s = useStore.getState()
+    const advId = s.activeAdventureId
+    const adv = s.adventures.find((a) => a.id === advId)
+    if (!adv || !advId) return
+    if (!/^adventure\s*\d+$/i.test(adv.name.trim())) return // already custom-named
+    const answered = adv.nodes.filter((n) => n.data.response)
+    if (answered.length === 0) return
+    labelingRef.current = true
+    try {
+      const basis = answered
+        .slice(0, 3)
+        .map((n) => `Q: ${n.data.prompt}\nA: ${(n.data.response || '').slice(0, 280)}`)
+        .join('\n\n')
+      const raw = await syncChat(
+        [
+          {
+            role: 'user',
+            content: `Give a short 2-4 word topic title (Title Case, no quotes, no trailing punctuation) for this exploration board:\n\n${basis}`,
+          },
+        ],
+        'You name exploration boards by their topic. Reply with only the title, nothing else.',
+        apiKey,
+        24
+      ).catch(() => '')
+      const clean = raw
+        .trim()
+        .replace(/^["'`]|["'`]$/g, '')
+        .split('\n')[0]
+        .slice(0, 40)
+        .trim()
+      // Re-check the name didn't change underneath us before committing.
+      const current = useStore.getState().adventures.find((a) => a.id === advId)
+      if (clean && current && /^adventure\s*\d+$/i.test(current.name.trim())) {
+        useStore.getState().renameAdventure(advId, clean)
+      }
+    } finally {
+      labelingRef.current = false
+    }
+  }, [apiKey])
+
   const removeNodesById = useCallback(
     (ids: string[]) => {
       if (ids.length === 0) return
@@ -342,7 +738,7 @@ export default function ExplorationMode() {
 
       setNodes(newNodes)
       setEdges(newEdges)
-      setExplorationNodes(newNodes as any)
+      setExplorationNodes(sanitizeNodesForStore(newNodes) as any)
       setExplorationEdges(newEdges as any)
 
       if (selectedNodeId && idSet.has(selectedNodeId)) setSelectedNodeId(null)
@@ -519,6 +915,7 @@ Give substantive responses that help the writer explore ideas deeply.
 You MUST ground your answer in credible sources. Use the web research results below when provided.
 Cite every external claim with a markdown link, e.g. [Article title](https://example.com).
 Prefer sources from the research results; do not invent URLs.
+When you can choose between equally good sources, link to ones that embed cleanly in an iframe (e.g. Wikipedia, official documentation, .gov/.edu pages, YouTube, arXiv, archive.org) and avoid sites that block embedding (e.g. Investopedia, Britannica, NYTimes, Bloomberg, WSJ, Reddit, Medium, Quora, X/Twitter, LinkedIn). The research results below are already ordered with embeddable sources first — favour the earlier ones.
 If the user asks to see what something looks like, note that they can ask for a visual/image and the app will generate one — do not claim you cannot show images.
 NEVER tell the user to "use the app's image generator" or paste a prompt elsewhere — if they want a sketch, diagram, or image, they should ask directly and the system handles it automatically.
 
@@ -566,6 +963,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
             return updated
           })
           captureBoard()
+          void maybeLabelAdventure()
         },
         (errMessage) => {
           setNodes((prev) => {
@@ -602,14 +1000,16 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         connectionCounts[e.source] = (connectionCounts[e.source] || 0) + 1
         connectionCounts[e.target] = (connectionCounts[e.target] || 0) + 1
       })
-      setNodes((prev) =>
-        prev.map((n) => ({
+      setNodes((prev) => {
+        const updated = prev.map((n) => ({
           ...n,
           data: { ...n.data, connectionCount: connectionCounts[n.id] || 0 },
         }))
-      )
+        persistNodes(updated)
+        return updated
+      })
     },
-    [edges, setEdges, setExplorationEdges, setNodes]
+    [edges, setEdges, setExplorationEdges, setNodes, persistNodes]
   )
 
   // Run (or re-run) visual generation for an existing node. Handles the slow
@@ -757,6 +1157,15 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         ...n,
         data: {
           ...n.data,
+          embedScrollTop:
+            n.data.nodeKind === 'embed' && activeAdventureId
+              ? resolveEmbedScrollTop(
+                  activeAdventureId,
+                  n.id,
+                  n.data.embedUrl,
+                  n.data.embedScrollTop
+                )
+              : n.data.embedScrollTop,
           pendingHighlight:
             pendingExcerpt?.sourceId === n.id ? pendingExcerpt.text : undefined,
           onReplyFull: nodesWithFullReply.has(n.id)
@@ -768,9 +1177,28 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
             : undefined,
           onLinkClick: (url: string, x: number, y: number, linkText?: string) =>
             handleLinkClick(n.id, url, x, y, linkText),
+          onEmbedScrollChange:
+            n.data.nodeKind === 'embed'
+              ? (scrollTop: number) => updateEmbedScroll(n.id, scrollTop, n.data.embedUrl)
+              : undefined,
+          onEmbedExcerpt:
+            n.data.nodeKind === 'embed'
+              ? (excerpt: { text: string; ratio: number }) => handleEmbedExcerpt(n.id, excerpt)
+              : undefined,
         },
       })),
-    [nodes, pendingExcerpt, startFullReply, selectedNodeId, nodesWithFullReply, resolveVisualChoice, handleLinkClick]
+    [
+      nodes,
+      activeAdventureId,
+      pendingExcerpt,
+      startFullReply,
+      selectedNodeId,
+      nodesWithFullReply,
+      resolveVisualChoice,
+      handleLinkClick,
+      updateEmbedScroll,
+      handleEmbedExcerpt,
+    ]
   )
 
   const createNode = useCallback(
@@ -784,6 +1212,9 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
       }
     ) => {
       if (!userPrompt.trim()) return
+      const adventureIdAtStart = boardAdventureIdRef.current
+      if (!adventureIdAtStart) return
+      const isStaleBoard = () => boardAdventureIdRef.current !== adventureIdAtStart
 
       const id = nanoid()
       const parentNode = parentId ? nodes.find((n) => n.id === parentId) : null
@@ -792,10 +1223,11 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
       const isFullReply = Boolean(parentNode && !opts?.highlight)
       const defaultPos = parentNode
         ? isFullReply
-          ? { x: parentNode.position.x, y: parentNode.position.y + ph + 40 }
-          : { x: parentNode.position.x + pw + 90, y: parentNode.position.y }
-        : { x: 100 + Math.random() * 200, y: 100 + nodes.length * 160 }
-      const pos = opts?.position ?? defaultPos
+          ? { x: parentNode.position.x, y: parentNode.position.y + ph + 28 }
+          : { x: parentNode.position.x + pw + 56, y: parentNode.position.y }
+        : { x: 100 + Math.random() * 160, y: 100 + nodes.length * 120 }
+      const pos = findOpenSpot(opts?.position ?? defaultPos, nodes, id)
+      focusPosition(pos)
 
       const newNode: Node<ExplorationNodeData> = {
         id,
@@ -811,6 +1243,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
       }
 
       setNodes((prev) => {
+        if (isStaleBoard()) return prev
         let updated: Node<ExplorationNodeData>[] = [...prev, newNode]
         // Record the highlight on the parent so the marker + region handle persist
         if (parentId && opts?.highlight) {
@@ -839,20 +1272,24 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
           data: opts?.highlight ? { branchType: 'excerpt' as const } : { branchType: 'full' as const },
         }
         setEdges((prev) => {
+          if (isStaleBoard()) return prev
           const updatedEdges = addEdge(edge, prev)
-          setExplorationEdges(updatedEdges as any)
+          persistEdges(updatedEdges as any)
           // Recompute connection counts so importance updates automatically
           const counts: Record<string, number> = {}
           updatedEdges.forEach((e) => {
             counts[e.source] = (counts[e.source] || 0) + 1
             counts[e.target] = (counts[e.target] || 0) + 1
           })
-          setNodes((prevNodes) =>
-            prevNodes.map((n) => ({
+          setNodes((prevNodes) => {
+            if (isStaleBoard()) return prevNodes
+            const updated = prevNodes.map((n) => ({
               ...n,
               data: { ...n.data, connectionCount: counts[n.id] || 0 },
             }))
-          )
+            persistNodes(updated)
+            return updated
+          })
           return updatedEdges
         })
       }
@@ -881,6 +1318,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         excerpt: opts?.excerpt,
         messageChain: buildMessageChain(nodesRef.current, edgesRef.current, parentId),
       })
+      if (isStaleBoard()) return
 
       if (decision.action === 'generate' || decision.action === 'search') {
         await runVisualGeneration(id, {
@@ -959,6 +1397,7 @@ Give substantive responses that help the writer explore ideas deeply.
 You MUST ground your answer in credible sources. Use the web research results below when provided.
 Cite every external claim with a markdown link, e.g. [Article title](https://example.com).
 Prefer sources from the research results; do not invent URLs.
+When you can choose between equally good sources, link to ones that embed cleanly in an iframe (e.g. Wikipedia, official documentation, .gov/.edu pages, YouTube, arXiv, archive.org) and avoid sites that block embedding (e.g. Investopedia, Britannica, NYTimes, Bloomberg, WSJ, Reddit, Medium, Quora, X/Twitter, LinkedIn). The research results below are already ordered with embeddable sources first — favour the earlier ones.
 If the user asks to see what something looks like, note that they can ask for a visual/image and the app will generate one — do not claim you cannot show images.
 NEVER tell the user to "use the app's image generator" or paste a prompt elsewhere — if they want a sketch, diagram, or image, they should ask directly and the system handles it automatically.
 
@@ -974,7 +1413,9 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         }
       }
       const finalContent = opts?.excerpt
-        ? `Regarding this excerpt from your previous response:\n"${opts.excerpt}"\n\n${userPrompt}`
+        ? parentNode?.data.nodeKind === 'embed'
+          ? `Regarding this excerpt from the embedded article${parentNode.data.embedUrl ? ` (${parentNode.data.embedUrl})` : ''}:\n"${opts.excerpt}"\n\n${userPrompt}`
+          : `Regarding this excerpt from your previous response:\n"${opts.excerpt}"\n\n${userPrompt}`
         : userPrompt
       messages.push({ role: 'user', content: finalContent })
 
@@ -984,6 +1425,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         system,
         apiKey,
         (chunk) => {
+          if (isStaleBoard()) return
           response += chunk
           setNodes((prev) =>
             prev.map((n) =>
@@ -992,6 +1434,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
           )
         },
         () => {
+          if (isStaleBoard()) return
           setNodes((prev) => {
             const updated = prev.map((n) => {
               if (n.id !== id) return n
@@ -1009,7 +1452,11 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
             persistNodes(updated)
             return updated
           })
+          // Re-resolve placement now that the finished block's true height is
+          // known, so it doesn't end up overlapping a block it references.
+          ;[160, 520].forEach((d) => setTimeout(() => settleNodePosition(id), d))
           captureBoard()
+          void maybeLabelAdventure()
         },
         (errMessage) => {
           setNodes((prev) => {
@@ -1036,13 +1483,148 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
       apiKey,
       setNodes,
       setEdges,
-      setExplorationEdges,
+      persistEdges,
       persistNodes,
       updateNodeResponse,
       getFullContext,
       runVisualGeneration,
+      focusPosition,
+      settleNodePosition,
     ]
   )
+
+  // Keep a live ref so onboarding commands always call the latest createNode.
+  const createNodeRef = useRef(createNode)
+  useEffect(() => {
+    createNodeRef.current = createNode
+  }, [createNode])
+
+  /* ── Onboarding helper: type a prompt, then run the real flow ── */
+
+  // Type a known prompt into the input character-by-character, then run `done`.
+  const typeIntoPrompt = useCallback((text: string, done?: () => void) => {
+    setSelectedNodeId(null)
+    setPendingExcerpt(null)
+    promptInputRef.current?.focus()
+    let i = 0
+    const tick = () => {
+      i++
+      setPrompt(text.slice(0, i))
+      if (i < text.length) {
+        setTimeout(tick, 30)
+      } else {
+        setTimeout(() => {
+          setPrompt('')
+          done?.()
+        }, 420)
+      }
+    }
+    setTimeout(tick, 250)
+  }, [])
+
+  // Register imperative onboarding commands the coach can fire into this mode.
+  // These drive the *real* app: Odin types a prompt, then the normal live flow
+  // runs (real AI answer, real links, real image generation).
+  useEffect(() => {
+    const unNew = registerOnboardingCommand('newAdventure', () => {
+      createFreshAdventure()
+    })
+    const unAdventure = registerOnboardingCommand('startAdventure', (topic) => {
+      const t =
+        (typeof topic === 'string' && topic.trim()) ||
+        getOnboardingTopic() ||
+        'a fascinating topic'
+      typeIntoPrompt(
+        `Give me an engaging overview of ${t} and why it's such a fascinating field to explore.`,
+        () => {
+          void createNodeRef.current(
+            `Give me an engaging overview of ${t} and why it's such a fascinating field to explore.`
+          )
+        }
+      )
+    })
+    const unAsk = registerOnboardingCommand('askResearchQuestion', (question) => {
+      const q = (typeof question === 'string' && question.trim()) || ''
+      if (!q) return
+      typeIntoPrompt(q, () => {
+        void createNodeRef.current(q)
+      })
+    })
+    const unImg = registerOnboardingCommand('generateImage', () => {
+      const t = getOnboardingTopic() || 'this topic'
+      typeIntoPrompt(`Create an illustration that captures the essence of ${t}.`, () => {
+        void createNodeRef.current(`Create an illustration that captures the essence of ${t}.`)
+      })
+    })
+    const unZoom = registerOnboardingCommand('zoomOutExploration', () => {
+      setTimeout(() => {
+        if (!rf) return
+        if (nodesRef.current.length > 0) rf.fitView({ padding: 0.6, duration: 600 })
+        else rf.zoomTo(0.55, { duration: 600 })
+      }, 60)
+    })
+    return () => {
+      unNew()
+      unAdventure()
+      unAsk()
+      unImg()
+      unZoom()
+    }
+  }, [rf, typeIntoPrompt, createFreshAdventure])
+
+  // Generate follow-up question pills whenever a new excerpt is highlighted.
+  useEffect(() => {
+    if (!pendingExcerpt) {
+      setExcerptSuggestions([])
+      setSuggestionsLoading(false)
+      return
+    }
+    const excerpt = pendingExcerpt.text
+    const node = nodesRef.current.find((n) => n.id === pendingExcerpt.sourceId)
+    const context =
+      node?.data.nodeKind === 'embed'
+        ? node.data.embedUrl ?? ''
+        : node?.data.response ?? ''
+    let cancelled = false
+    setExcerptSuggestions([])
+    setSuggestionsLoading(true)
+    ;(async () => {
+      const qs = await generateExcerptQuestions(excerpt, context, apiKey)
+      if (!cancelled) {
+        setExcerptSuggestions(qs)
+        setSuggestionsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [pendingExcerpt, apiKey])
+
+  // Ask one of the suggested questions about the current highlight.
+  const submitExcerptQuestion = (question: string) => {
+    if (!pendingExcerpt) return
+    const sourceId = pendingExcerpt.sourceId
+    const excerptText = pendingExcerpt.text
+    const ratio = pendingExcerpt.ratio
+
+    const parent = nodesRef.current.find((n) => n.id === sourceId)
+    const pw = (parent as any)?.width ?? 420
+    const ph = (parent as any)?.height ?? 220
+    const pos = parent
+      ? { x: parent.position.x + pw + 110, y: parent.position.y + Math.max(0, ratio * ph - 40) }
+      : undefined
+    void createNode(question, sourceId, {
+      excerpt: excerptText,
+      position: pos,
+      highlight: { id: nanoid(), text: excerptText, ratio },
+    })
+
+    setPendingExcerpt(null)
+    setSelectedNodeId(null)
+    setExcerptSuggestions([])
+    setSuggestionsLoading(false)
+    setPrompt('')
+  }
 
   const handleNewNode = (e: React.FormEvent) => {
     e.preventDefault()
@@ -1084,6 +1666,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
       const target = e.target as HTMLElement
       if (target.closest('.exploration-prompt-bar')) return // don't disturb the input
       if (target.closest('.exp-reply-btn')) return // + button handles full-message reply
+      if (target.closest('iframe')) return // embed iframes handle their own selections
 
       const sel = window.getSelection()
       const text = sel?.toString().trim() || ''
@@ -1122,31 +1705,10 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
     }
   }, [])
 
-  // Tidy left-to-right tree layout
-  const organize = useCallback(() => {
-    const positioned = layoutTree(nodesRef.current as any, edgesRef.current as any)
-    setNodes((prev) => {
-      const updated = prev.map((n) => (positioned[n.id] ? { ...n, position: positioned[n.id] } : n))
-      persistNodes(updated)
-      return updated
-    })
-    setTimeout(() => rf?.fitView({ padding: 0.2, duration: 400 }), 60)
-  }, [setNodes, persistNodes, rf])
-
-  const organizeRef = useRef(organize)
-  useEffect(() => {
-    organizeRef.current = organize
-  }, [organize])
-
-  // Auto-tidy whenever the number of nodes changes
-  const nodeCount = nodes.length
-  useEffect(() => {
-    if (nodeCount !== prevCountRef.current) {
-      prevCountRef.current = nodeCount
-      const t = setTimeout(() => organizeRef.current(), 160)
-      return () => clearTimeout(t)
-    }
-  }, [nodeCount])
+  // Zoom out to frame every block at once (the "see them all" button).
+  const fitAll = useCallback(() => {
+    rf?.fitView({ padding: 0.2, duration: 500 })
+  }, [rf])
 
   const rankedSources = useMemo(
     () =>
@@ -1172,7 +1734,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         <ReactFlow
           nodes={flowNodes}
           edges={edges}
-          onNodesChange={onNodesChange}
+          onNodesChange={handleNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           nodeTypes={nodeTypes}
@@ -1191,7 +1753,8 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
           onNodeContextMenu={onNodeContextMenu}
           onNodesDelete={onNodesDelete}
           fitView
-          fitViewOptions={{ padding: 0.2 }}
+          fitViewOptions={{ padding: 0.4 }}
+          minZoom={0.15}
           deleteKeyCode="Delete"
         >
           <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="rgba(255,255,255,0.05)" />
@@ -1260,44 +1823,71 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
                   Open in new tab
                 </button>
 
-                {/* Embed option — hidden when confirmed non-embeddable */}
-                {linkPopup.embeddable !== false && (
+                {/* Only offer embedding when the site actually allows framing.
+                    If it can't be framed there's no point — the user would just
+                    have to open a new tab anyway. */}
+                {linkPopup.embeddable === null && (
+                  <div className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-black/40">
+                    <Sparkles size={13} className="animate-pulse text-black/30" />
+                    Checking if it can embed…
+                  </div>
+                )}
+                {linkPopup.embeddable === true && (
                   <button
                     type="button"
-                    disabled={linkPopup.embeddable === null}
-                    onClick={() => createEmbedNode(linkPopup.url, linkPopup.sourceNodeId, linkPopup.linkText)}
-                    className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-black/75 hover:bg-black/[0.04] disabled:opacity-40 disabled:cursor-default"
+                    onClick={() =>
+                      createEmbedNode(linkPopup.url, linkPopup.sourceNodeId, linkPopup.linkText)
+                    }
+                    className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-black/75 hover:bg-black/[0.04]"
                   >
-                    <Sparkles size={13} className={linkPopup.embeddable === null ? 'animate-pulse text-black/30' : 'text-black/40'} />
-                    {linkPopup.embeddable === null ? 'Checking…' : 'Embed on canvas'}
+                    <Sparkles size={13} className="text-black/40" />
+                    Embed on canvas
                   </button>
-                )}
-
-                {linkPopup.embeddable === false && (
-                  <p className="px-3 py-2 text-[11px] text-black/35 italic">
-                    This site doesn't allow embedding.
-                  </p>
                 )}
               </div>
             </div>
           </>
         )}
 
-        <AdventureMenu onBeforeSwitch={flushAdventureToStore} />
+        <AdventureMenu onBeforeSwitch={flushAdventureToStore} onCreateAdventure={createFreshAdventure} />
 
-        {/* Organize button */}
+        {/* See-all button — frame every block at once */}
         <button
-          onClick={organize}
+          onClick={fitAll}
           disabled={nodes.length === 0}
           className="btn-ghost absolute top-4 right-4 z-20 flex items-center gap-2 text-xs disabled:opacity-40"
-          title="Tidy the layout"
+          title="See all blocks"
         >
-          <LayoutGrid size={12} />
-          Organize
+          <Maximize2 size={12} />
+          See all
         </button>
 
         {/* Prompt input overlay */}
-        <div className="exploration-prompt-bar absolute bottom-4 left-1/2 -translate-x-1/2 w-full max-w-xl px-4">
+        <div className="exploration-prompt-bar absolute bottom-4 left-1/2 -translate-x-1/2 w-full max-w-xl px-4" data-tour="exploration-prompt">
+          {pendingExcerpt && (suggestionsLoading || excerptSuggestions.length > 0) && (
+            <div className="exp-suggest-pills card">
+              {suggestionsLoading ? (
+                <span className="exp-suggest-loading">
+                  <Loader2 size={12} className="animate-spin" />
+                  Odin is thinking of questions…
+                </span>
+              ) : (
+                <div className="exp-suggest-scroll" role="listbox" aria-label="Suggested questions">
+                  {excerptSuggestions.map((q, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      role="option"
+                      className="exp-suggest-pill"
+                      onClick={() => submitExcerptQuestion(q)}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <form onSubmit={handleNewNode} className="card flex items-center gap-2 p-2 shadow-2xl">
             <input
               ref={promptInputRef}
@@ -1383,16 +1973,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         {/* Panel content */}
         <div className="flex-1 border-l border-black/8 bg-white/20 flex flex-col overflow-hidden backdrop-blur-sm">
           <div className="flex-1 overflow-y-auto p-3 min-w-0">
-            <LiveSourceFeed sources={rankedSources} defaultOpen />
-          </div>
-          <div className="p-3 border-t border-black/8 min-w-0">
-            <button
-              onClick={() => setActiveTab('write')}
-              className="btn-primary w-full flex items-center justify-center gap-2"
-            >
-              <PenTool size={14} />
-              Write
-            </button>
+            <LiveSourceFeed sources={rankedSources} />
           </div>
         </div>
       </motion.div>

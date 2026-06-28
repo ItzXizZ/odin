@@ -4,14 +4,14 @@ import { useStore } from '../../store/useStore'
 
 interface AdventureMenuProps {
   onBeforeSwitch?: () => void
+  onCreateAdventure?: () => void
 }
 
-export default function AdventureMenu({ onBeforeSwitch }: AdventureMenuProps) {
+export default function AdventureMenu({ onBeforeSwitch, onCreateAdventure }: AdventureMenuProps) {
   const {
     adventures,
     activeAdventureId,
     setActiveAdventureId,
-    createAdventure,
     deleteAdventure,
     renameAdventure,
   } = useStore()
@@ -48,8 +48,12 @@ export default function AdventureMenu({ onBeforeSwitch }: AdventureMenuProps) {
   }
 
   const handleNew = () => {
-    onBeforeSwitch?.()
-    createAdventure()
+    if (onCreateAdventure) {
+      onCreateAdventure()
+    } else {
+      onBeforeSwitch?.()
+      useStore.getState().createAdventure()
+    }
     setOpen(false)
   }
 

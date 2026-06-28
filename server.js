@@ -200,13 +200,54 @@ function formatResearchContext(sources) {
     .join('\n\n')
 }
 
+// Domains that reliably allow iframe embedding (great for "embed on canvas").
+const EMBED_FRIENDLY_DOMAINS = [
+  'wikipedia.org', 'wikimedia.org', 'wiktionary.org', 'wikibooks.org', 'simple.wikipedia.org',
+  'youtube.com', 'youtu.be', 'vimeo.com',
+  'archive.org', 'arxiv.org', 'gutenberg.org', 'openstax.org', 'khanacademy.org',
+  'ourworldindata.org', 'observablehq.com', 'plato.stanford.edu', 'biorxiv.org', 'medrxiv.org',
+]
+// Domains that block framing (X-Frame-Options/CSP) — avoid when an equivalent exists.
+const EMBED_HOSTILE_DOMAINS = [
+  'investopedia.com', 'britannica.com', 'nytimes.com', 'bloomberg.com', 'wsj.com', 'ft.com',
+  'economist.com', 'forbes.com', 'reuters.com', 'reddit.com', 'medium.com', 'quora.com',
+  'twitter.com', 'x.com', 'facebook.com', 'instagram.com', 'linkedin.com', 'statista.com',
+  'sciencedirect.com', 'jstor.org', 'springer.com', 'onlinelibrary.wiley.com', 'tandfonline.com',
+  'cloudflare.com',
+]
+
+function embedScore(url) {
+  let host
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '').toLowerCase()
+  } catch {
+    return 0
+  }
+  const matches = (list) => list.some((d) => host === d || host.endsWith('.' + d))
+  if (matches(EMBED_HOSTILE_DOMAINS)) return -3
+  if (matches(EMBED_FRIENDLY_DOMAINS)) return 2
+  if (/(^|\.)gov(\.|$)|(^|\.)edu(\.|$)/.test(host)) return 1
+  return 0
+}
+
+// Stable sort that floats embed-friendly results to the top while preserving
+// the search engine's relevance order within each tier. Pure/in-memory, so it
+// adds no latency to the response.
+function rankByEmbeddability(results) {
+  return results
+    .map((r, i) => ({ r, i, s: embedScore(r.url) }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .map((x) => x.r)
+}
+
 // Web research endpoint — used before every exploration response
 app.post('/api/research', async (req, res) => {
   const { query } = req.body
   if (!query?.trim()) return res.status(400).json({ error: 'Query required' })
 
   try {
-    const raw = await searchWeb(query.trim())
+    // Pull a slightly larger pool so the embeddable re-ranking has room to work.
+    const raw = rankByEmbeddability(await searchWeb(query.trim(), 8))
     const sources = raw.map(({ id, title, url }) => ({ id, title, url }))
     res.json({
       sources,
@@ -387,18 +428,21 @@ app.get('/api/can-embed', async (req, res) => {
   const checkHeaders = (headers) => {
     const xfo = (headers.get('x-frame-options') || '').trim().toUpperCase()
     const csp = headers.get('content-security-policy') || ''
-    if (xfo === 'DENY' || xfo === 'SAMEORIGIN') {
+    // Any X-Frame-Options value (DENY, SAMEORIGIN, ALLOW-FROM ...) blocks
+    // embedding into an arbitrary third-party origin like ours.
+    if (xfo) {
       return { embeddable: false, reason: `X-Frame-Options: ${xfo}` }
     }
-    // CSP frame-ancestors 'none' or 'self' (without wildcards) blocks embedding
+    // CSP frame-ancestors gates framing. Only consider it embeddable when it
+    // explicitly allows any origin (contains a wildcard or a bare scheme).
     const faMatch = csp.match(/frame-ancestors\s+([^;]+)/i)
     if (faMatch) {
       const dirs = faMatch[1].trim().toLowerCase()
-      if (dirs === "'none'" || dirs === 'none') {
-        return { embeddable: false, reason: "CSP frame-ancestors 'none'" }
-      }
-      if (dirs === "'self'" || dirs === 'self') {
-        return { embeddable: false, reason: "CSP frame-ancestors 'self'" }
+      // Embeddable from any origin only if there's a bare wildcard or a bare
+      // scheme source (e.g. `https:`). Specific allowlists won't include us.
+      const allowsAny = /(^|\s)\*(\s|$)/.test(dirs) || /(^|\s)https?:(\s|$)/.test(dirs)
+      if (!allowsAny) {
+        return { embeddable: false, reason: `CSP frame-ancestors ${dirs}` }
       }
     }
     return { embeddable: true }
@@ -416,24 +460,217 @@ app.get('/api/can-embed', async (req, res) => {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 6000)
 
-    let response
-    try {
-      response = await fetch(url, { method: 'HEAD', signal: controller.signal, ...fetchOpts })
-    } catch {
-      // Some servers reject HEAD — retry with GET + early abort via Range
-      response = await fetch(url, {
-        method: 'GET',
-        signal: controller.signal,
-        headers: { ...fetchOpts.headers, Range: 'bytes=0-0' },
-        redirect: 'follow',
-      })
-    }
+    // Use GET (what the iframe actually does) — many servers return different
+    // framing headers for HEAD vs GET, which caused false "embeddable" results.
+    const response = await fetch(url, { method: 'GET', signal: controller.signal, ...fetchOpts })
     clearTimeout(timer)
+    // We only need the headers; free the body so we don't download the page.
+    try { response.body?.cancel() } catch { /* ignore */ }
 
     return res.json(checkHeaders(response.headers))
   } catch (err) {
-    // Network/timeout — assume embeddable so the user can still try
-    return res.json({ embeddable: true, reason: 'unreachable' })
+    // Can't verify — default to NOT directly embeddable so the client falls
+    // back to the reader-proxy (which always works) instead of a broken frame.
+    return res.json({ embeddable: false, reason: 'unreachable' })
+  }
+})
+
+// Link preview: fetch a page server-side and extract Open Graph / meta info so
+// the client can render a rich, reliable preview card for sites that block
+// direct framing (and that bot-wall the reader-proxy). Always returns JSON.
+app.get('/api/preview', async (req, res) => {
+  const { url } = req.query
+
+  const domainOf = (u) => {
+    try {
+      return new URL(u).hostname.replace(/^www\./, '')
+    } catch {
+      return ''
+    }
+  }
+
+  if (!url || typeof url !== 'string') {
+    return res.json({ blocked: true, url: '', domain: '' })
+  }
+  let parsedUrl
+  try {
+    parsedUrl = new URL(url)
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('protocol')
+  } catch {
+    return res.json({ blocked: true, url, domain: domainOf(url) })
+  }
+
+  const decode = (s) =>
+    (s || '')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&#0?39;/g, "'")
+      .replace(/&#x27;/gi, "'")
+      .replace(/&apos;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+  const pick = (html, names) => {
+    for (const name of names) {
+      const re1 = new RegExp(
+        `<meta[^>]+(?:property|name)=["']${name}["'][^>]+content=["']([^"']*)["']`,
+        'i'
+      )
+      const re2 = new RegExp(
+        `<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${name}["']`,
+        'i'
+      )
+      const m = html.match(re1) || html.match(re2)
+      if (m && m[1] && m[1].trim()) return decode(m[1])
+    }
+    return ''
+  }
+
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10000)
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    })
+    clearTimeout(timer)
+
+    const finalUrl = response.url || url
+    const domain = domainOf(finalUrl)
+    const html = (await response.text()).slice(0, 600000)
+
+    const titleTag = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '').trim()
+    const title = pick(html, ['og:title', 'twitter:title']) || decode(titleTag)
+    const description = pick(html, ['og:description', 'twitter:description', 'description'])
+    let image = pick(html, ['og:image:secure_url', 'og:image', 'twitter:image', 'twitter:image:src'])
+    const siteName = pick(html, ['og:site_name'])
+
+    // Favicon (best effort) — resolve relative to the page origin.
+    let favicon = ''
+    const iconMatch =
+      html.match(/<link[^>]+rel=["'][^"']*icon[^"']*["'][^>]+href=["']([^"']+)["']/i) ||
+      html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*icon[^"']*["']/i)
+    try {
+      const origin = new URL(finalUrl).origin
+      favicon = iconMatch?.[1] ? new URL(iconMatch[1], finalUrl).href : `${origin}/favicon.ico`
+      if (image) image = new URL(image, finalUrl).href
+    } catch {
+      /* ignore */
+    }
+
+    // Detect bot-walls / JS-gates so the client shows a graceful card.
+    const blockedSignal =
+      /just a moment|attention required|enable javascript|access denied|are you a (human|robot)|verify you are human|cf-browser-verification/i.test(
+        title + ' ' + html.slice(0, 2000)
+      )
+    const blocked = blockedSignal || (!title && !description && !image)
+
+    return res.json({
+      url: finalUrl,
+      domain,
+      title: blocked ? '' : title,
+      description: blocked ? '' : description,
+      image: blocked ? '' : image,
+      siteName: siteName || domain,
+      favicon,
+      blocked,
+    })
+  } catch (err) {
+    return res.json({ blocked: true, url, domain: domainOf(url) })
+  }
+})
+
+// Reader-proxy: fetch a page server-side, strip framing headers and scripts,
+// and inject a <base> tag so relative assets/links still resolve. This lets us
+// render a safe, framable preview of sites that block direct embedding via
+// X-Frame-Options / CSP. Scripts are removed so nothing untrusted runs, and the
+// iframe that loads this is sandboxed without script/same-origin privileges.
+app.get('/api/proxy', async (req, res) => {
+  const { url } = req.query
+
+  const fallbackPage = (message, target) => `<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{height:100%;margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f5f5f6;color:#444}
+.wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px}
+a{color:#2563eb;text-decoration:none;border:1px solid #d4d4d8;background:#fff;border-radius:8px;padding:8px 14px;font-size:13px}
+a:hover{background:#f0f0f2}p{font-size:13px;color:#666;max-width:340px;line-height:1.5}</style></head>
+<body><div class="wrap"><p>${message}</p>${target ? `<a href="${target}" target="_blank" rel="noopener noreferrer">Open in new tab</a>` : ''}</div></body></html>`
+
+  res.set('Content-Type', 'text/html; charset=utf-8')
+
+  if (!url || typeof url !== 'string') {
+    return res.status(400).send(fallbackPage('No URL provided.'))
+  }
+  let parsedUrl
+  try {
+    parsedUrl = new URL(url)
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) throw new Error('protocol')
+  } catch {
+    return res.status(400).send(fallbackPage('That link is not a valid web address.'))
+  }
+
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 12000)
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/*,*/*;q=0.8',
+      },
+    })
+    clearTimeout(timer)
+
+    const contentType = response.headers.get('content-type') || ''
+    const finalUrl = response.url || url
+
+    // Non-HTML (images, PDFs, etc.) — stream the bytes through, framable.
+    if (!contentType.includes('text/html')) {
+      const buf = Buffer.from(await response.arrayBuffer())
+      res.set('Content-Type', contentType || 'application/octet-stream')
+      return res.send(buf)
+    }
+
+    let html = await response.text()
+    // Drop existing <base> tags, then strip scripts (prevents frame-busting and
+    // keeps untrusted JS from running) and remove any inline framing headers.
+    html = html
+      .replace(/<base[^>]*>/gi, '')
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<meta[^>]+http-equiv=["']?(content-security-policy|x-frame-options)["']?[^>]*>/gi, '')
+
+    const markCss =
+      '<style>' +
+      '::highlight(odin-pending){background-color:rgba(255,196,46,.65);color:inherit}' +
+      '::highlight(odin-mark){background-color:rgba(255,196,46,.42);color:inherit}' +
+      '.branch-mark,.branch-mark-pending{display:inline!important;box-decoration-break:clone;-webkit-box-decoration-break:clone;color:inherit!important}' +
+      '.branch-mark{background-color:rgba(255,196,46,.42)!important;border-bottom:2px solid rgba(180,120,0,.75)!important;border-radius:2px}' +
+      '.branch-mark-pending{background-color:rgba(255,196,46,.65)!important;border-bottom:2.5px solid rgba(160,100,0,.9)!important;border-radius:2px;box-shadow:0 0 0 2px rgba(255,196,46,.35)}' +
+      '</style>'
+    const baseTag = `<base href="${finalUrl}" target="_blank">${markCss}`
+    if (/<head[^>]*>/i.test(html)) {
+      html = html.replace(/(<head[^>]*>)/i, `$1${baseTag}`)
+    } else if (/<html[^>]*>/i.test(html)) {
+      html = html.replace(/(<html[^>]*>)/i, `$1<head>${baseTag}</head>`)
+    } else {
+      html = `${baseTag}${html}`
+    }
+
+    return res.send(html)
+  } catch (err) {
+    return res
+      .status(502)
+      .send(fallbackPage("This site couldn't be loaded for preview.", url))
   }
 })
 

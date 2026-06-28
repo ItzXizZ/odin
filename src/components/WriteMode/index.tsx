@@ -40,6 +40,7 @@ import {
   type WriteChatThread,
 } from './chatThreads'
 import { subscribeWorkspaceSaveStatus, type WorkspaceSaveStatus } from '../../lib/workspaceStorage'
+import { registerOnboardingCommand } from '../../lib/onboarding'
 
 /** Highlight color marking the passage currently attached to the assistant. */
 const REF_HIGHLIGHT_COLOR = '#ffe690'
@@ -721,13 +722,13 @@ export default function WriteMode() {
     [apiKey, applyStyleActions, postStyleMessage]
   )
 
-  const handleAIAssist = useCallback(async () => {
-    if (!aiPrompt.trim() || !apiKey || !editor) return
+  const handleAIAssist = useCallback(async (override?: string) => {
+    const instruction = (typeof override === 'string' ? override : aiPrompt).trim()
+    if (!instruction || !apiKey || !editor) return
 
-    const instruction = aiPrompt.trim()
     const userEntryId = Date.now().toString()
     updateThreadMessages((prev) => [...prev, { id: userEntryId, role: 'user', content: instruction }])
-    setAiPrompt('')
+    if (typeof override !== 'string') setAiPrompt('')
     setIsStreaming(true)
 
     // While a review is open, follow-up edits stack: the AI edits the proposed
@@ -916,6 +917,47 @@ INSTRUCTION: ${instruction}`
     // update the Stylism network (reinforce / create / flag conflicts).
     void maintainStyleNetwork(instruction)
   }, [aiPrompt, apiKey, editor, getFullContext, styleRules, attachedSelection, enterReview, maintainStyleNetwork, updateThreadMessages])
+
+  /* ── Onboarding command hooks ── */
+  const handleAIAssistRef = useRef(handleAIAssist)
+  useEffect(() => {
+    handleAIAssistRef.current = handleAIAssist
+  }, [handleAIAssist])
+
+  useEffect(() => {
+    const unLib = registerOnboardingCommand('openDocLibrary', () => {
+      setShowContextHouse(false)
+      setAssistantOpen(false)
+      setShowDocLibrary(true)
+    })
+    const unCtx = registerOnboardingCommand('openContextHouse', () => {
+      setShowDocLibrary(false)
+      setAssistantOpen(false)
+      setShowContextHouse(true)
+    })
+    const unClose = registerOnboardingCommand('closeWritePanels', () => {
+      setShowDocLibrary(false)
+      setShowContextHouse(false)
+      setAssistantOpen(true)
+    })
+    const unSummary = registerOnboardingCommand('writeContextSummary', () => {
+      setShowDocLibrary(false)
+      setShowContextHouse(false)
+      setAssistantOpen(true)
+      // Give the editor a beat to remount/clear before the empty-doc draft path.
+      setTimeout(() => {
+        void handleAIAssistRef.current(
+          'Write a clear, well-structured summary of the materials in my Context House to start this document.'
+        )
+      }, 250)
+    })
+    return () => {
+      unLib()
+      unCtx()
+      unClose()
+      unSummary()
+    }
+  }, [])
 
   /* ── Tunnel vision ── */
   const openTunnel = useCallback(
@@ -1420,7 +1462,7 @@ INSTRUCTION: ${instruction}`
                     <button
                       type="button"
                       className="glass-btn assistant-send-btn"
-                      onClick={handleAIAssist}
+                      onClick={() => handleAIAssist()}
                       disabled={!aiPrompt.trim() || !apiKey}
                       title="Send message"
                       aria-label="Send message"

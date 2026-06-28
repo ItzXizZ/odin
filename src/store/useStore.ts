@@ -162,6 +162,12 @@ export interface ExplorationNodeData {
   isReplyTarget?: boolean
   /** URL to embed when nodeKind === 'embed'. */
   embedUrl?: string
+  /** Saved scroll position inside a reader-proxied embed (persisted with the adventure). */
+  embedScrollTop?: number
+  /** Transient callback injected by ExplorationMode — not persisted. */
+  onEmbedScrollChange?: (scrollTop: number) => void
+  /** Transient: user selected text inside an embed for branching (not persisted). */
+  onEmbedExcerpt?: (excerpt: { text: string; ratio: number }) => void
   /** Transient callback injected by ExplorationMode — not persisted. */
   onLinkClick?: (url: string, x: number, y: number, linkText?: string) => void
 }

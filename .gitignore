@@ -1,5 +1,6 @@
 node_modules/
 dist/
+Moneta2/
 .env
 .env.local
 *.log

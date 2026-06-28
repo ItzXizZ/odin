@@ -1,4 +1,4 @@
-import { useRef, useState, useMemo } from 'react'
+import { useRef, useState, useMemo, useEffect } from 'react'
 import type { CSSProperties } from 'react'
 import {
   FileText,
@@ -10,7 +10,9 @@ import {
   GitBranch,
   ChevronDown,
   Layers,
+  ArrowRight,
 } from 'lucide-react'
+import { useTutorial } from '../../lib/tutorial'
 import { nanoid } from 'nanoid'
 import { useStore } from '../../store/useStore'
 import type { Adventure } from '../../store/useStore'
@@ -244,6 +246,14 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
 
   const availableAdventures = adventures.filter((a) => !linkedAdventureIds.includes(a.id))
 
+  const { active: tourActive, step: tourStep, next: tourNext } = useTutorial()
+  const onboarding = tourActive && tourStep?.id === 'write-context'
+
+  // During onboarding, open the Adventures slot so the user can link theirs.
+  useEffect(() => {
+    if (onboarding) setExpandedSection('adventure')
+  }, [onboarding])
+
   const toggleSection = (s: Exclude<OpenSection, null>) => {
     setExpandedSection((prev) => (prev === s ? null : s))
     if (s !== 'pdf') setExpandedPdf(null)
@@ -345,15 +355,26 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
                 </>
               )}
             </div>
-            {onClose && (
+            {onboarding ? (
               <button
                 type="button"
-                onClick={onClose}
+                onClick={() => tourNext()}
                 className="btn-primary flex items-center gap-2"
               >
-                <PenTool size={13} />
-                Write
+                Next
+                <ArrowRight size={13} />
               </button>
+            ) : (
+              onClose && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="btn-primary flex items-center gap-2"
+                >
+                  <PenTool size={13} />
+                  Write
+                </button>
+              )
             )}
           </div>
         </div>

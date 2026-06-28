@@ -417,6 +417,9 @@
 }
 
 .branch-mark {
+  display: inline;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
   background: rgba(255, 196, 46, 0.42);
   border-bottom: 2px solid rgba(180, 120, 0, 0.75);
   border-radius: 2px;
@@ -424,6 +427,9 @@
 }
 
 .branch-mark-pending {
+  display: inline;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
   background: rgba(255, 196, 46, 0.58);
   border-bottom: 2.5px solid rgba(160, 100, 0, 0.9);
   border-radius: 2px;
@@ -784,10 +790,87 @@
 }
 
 .home-logo {
-  height: 4.5rem;
+  height: 7.5rem;
   width: auto;
   display: block;
-  margin-bottom: 1.1rem;
+  object-fit: contain;
+  filter: contrast(1.08) brightness(1.04);
+}
+
+.home-odin {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 0.85rem;
+  padding-top: 7.25rem;
+}
+
+.home-speech-bubble-wrap {
+  position: absolute;
+  top: 0.5rem;
+  left: 50%;
+  transform: translate(14%, 0);
+  z-index: 1;
+}
+
+.home-speech-bubble {
+  position: relative;
+  width: 19.5rem;
+  max-width: 19.5rem;
+  min-height: 3.6rem;
+  margin: 0;
+  padding: 0.7rem 1.05rem;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.07);
+  text-align: left;
+  transform-origin: bottom left;
+}
+
+/* Connected tail — half tucked under bubble, pointing down-left toward Odin */
+.home-speech-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 0.9rem;
+  width: 12px;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-top-color: transparent;
+  border-right-color: transparent;
+  transform: rotate(-45deg);
+}
+
+.home-speech-text {
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.55;
+  letter-spacing: -0.02em;
+  color: var(--text-secondary);
+}
+
+.home-speech-text strong {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.home-speech-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 0.95em;
+  margin-left: 1px;
+  vertical-align: -0.08em;
+  background: rgba(60, 60, 60, 0.55);
+  animation: home-cursor-blink 0.85s step-end infinite;
+}
+
+@keyframes home-cursor-blink {
+  50% { opacity: 0; }
 }
 
 .home-title {
@@ -796,6 +879,7 @@
   font-weight: 700;
   letter-spacing: -0.035em;
   color: rgba(32, 32, 32, 0.94);
+  margin: 0;
 }
 
 .home-sub {
@@ -807,10 +891,11 @@
 }
 
 .home-cta {
-  margin-top: 1.5rem;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.5rem;
+  min-width: 10.75rem;
   padding: 0.7rem 1.4rem;
   border: none;
   border-radius: 0.85rem;
@@ -832,12 +917,11 @@
 }
 
 .home-actions {
-  margin-top: 1.8rem;
+  margin-top: 1.15rem;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  justify-content: center;
+  gap: 0.55rem;
 }
 
 .home-cta-secondary {
@@ -850,6 +934,27 @@
   background: rgba(255, 255, 255, 0.92) !important;
 }
 
+.home-tutorial-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.home-recommended {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(60, 60, 60, 0.5);
+  line-height: 1;
+}
+
+.home-cta-circle {
+  border-radius: 9999px !important;
+  padding: 0.7rem 1.6rem !important;
+}
+
 /* ============================================================
    TUTORIAL — spotlight overlay + coach-mark popups
    ============================================================ */
@@ -860,30 +965,27 @@
   pointer-events: none;
 }
 
-.tour-dim-full {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-}
-
+/* No dimming — we never darken the page so the user can freely interact.
+   The spotlight is a bright, glowing ring that simply draws the eye. */
 .tour-spot {
   position: fixed;
   border-radius: 14px;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
-  outline: 2px solid rgba(255, 255, 255, 0.95);
-  outline-offset: 2px;
+  outline: 3px solid rgba(30, 30, 30, 0.85);
+  outline-offset: 3px;
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.9),
+    0 0 22px 7px rgba(0, 0, 0, 0.22);
 }
 .tour-spot::after {
   content: '';
   position: absolute;
-  inset: -2px;
+  inset: -3px;
   border-radius: 14px;
-  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.45);
-  animation: tour-pulse 1.8s ease-in-out infinite;
+  animation: tour-pulse 1.7s ease-in-out infinite;
 }
 @keyframes tour-pulse {
-  0%, 100% { box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.35); }
-  50% { box-shadow: 0 0 0 8px rgba(99, 102, 241, 0.12); }
+  0%, 100% { box-shadow: 0 0 0 4px rgba(30, 30, 30, 0.28); }
+  50% { box-shadow: 0 0 0 12px rgba(30, 30, 30, 0.05); }
 }
 
 .tour-pop {
@@ -923,7 +1025,7 @@
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: rgba(99, 102, 241, 0.9);
+  color: rgba(60, 60, 60, 0.5);
 }
 
 .tour-title {
@@ -949,12 +1051,6 @@
   gap: 0.5rem;
 }
 
-.tour-nav {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-
 .tour-skip {
   background: transparent;
   border: none;
@@ -962,6 +1058,8 @@
   font-size: 0.8rem;
   color: rgba(60, 60, 60, 0.5);
   padding: 0.3rem 0.1rem;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .tour-skip:hover {
   color: rgba(60, 60, 60, 0.8);
@@ -974,6 +1072,7 @@
   border-radius: 9px;
   font-size: 0.85rem;
   font-weight: 600;
+  white-space: nowrap;
   background: rgba(35, 35, 35, 0.92);
   color: #fff;
   transition: background 0.12s ease, transform 0.12s ease;
@@ -991,6 +1090,576 @@
 }
 .tour-btn-ghost:hover {
   background: rgba(0, 0, 0, 0.1);
+}
+.tour-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.tour-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* ── Odin's animated talking head (shared by intro + coach) ── */
+.odin-head {
+  position: relative;
+  flex-shrink: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.odin-head-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  transform: none;
+  transition: opacity 0.05s linear;
+  user-select: none;
+  pointer-events: none;
+  image-rendering: auto;
+  filter: contrast(1.08) brightness(1.04);
+}
+.odin-head-glow {
+  display: none;
+}
+.odin-head.is-talking {
+  animation: odin-head-pulse 1.7s ease-in-out infinite;
+}
+@keyframes odin-head-pulse {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+/* Blinking caret that trails Odin's typewriter speech */
+.odin-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: rgba(60, 60, 60, 0.55);
+  border-radius: 1px;
+  animation: odin-caret-blink 0.9s step-end infinite;
+}
+@keyframes odin-caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ── Talking Odin coach — big face + speech bubble ── */
+.odin-coach {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.odin-coach-avatar {
+  flex-shrink: 0;
+}
+
+.odin-coach-bubble {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(0, 0, 0, 0.07);
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+  padding: 0.9rem 1rem 0.85rem;
+}
+/* Speech-bubble tail pointing back at Odin's face */
+.odin-coach-bubble::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 26px;
+  width: 16px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  border-left: 1px solid rgba(0, 0, 0, 0.07);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  transform: rotate(45deg);
+}
+
+.odin-coach-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.odin-coach-name {
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: -0.01em;
+  color: rgba(25, 25, 30, 0.92);
+}
+.odin-coach-step {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(60, 60, 60, 0.5);
+}
+
+.odin-coach-say {
+  margin-top: 0.45rem;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: rgba(45, 45, 50, 0.85);
+}
+
+.odin-coach-chips {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.odin-coach-chip {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.7);
+  color: rgba(40, 40, 40, 0.9);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  cursor: pointer;
+  text-align: left;
+  line-height: 1.25;
+  transition: background 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
+}
+.odin-coach-chip:hover {
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  transform: translateY(-1px);
+}
+.odin-coach-chip:active {
+  transform: scale(0.96);
+}
+.odin-coach-chips-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: rgba(60, 60, 60, 0.6);
+}
+
+/* ============================================================
+   TUTORIAL INTRO — full-screen blurred glass conversation
+   ============================================================ */
+.odin-intro-root {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: radial-gradient(120% 120% at 50% 0%, rgba(30, 30, 32, 0.34), rgba(15, 15, 16, 0.55));
+  backdrop-filter: blur(16px) saturate(105%);
+  -webkit-backdrop-filter: blur(16px) saturate(105%);
+}
+
+.odin-intro-card {
+  position: relative;
+  width: 100%;
+  max-width: 540px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 1.6rem 2.2rem 1.6rem;
+  border-radius: 28px;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.94), rgba(248, 248, 248, 0.86));
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(26px);
+  -webkit-backdrop-filter: blur(26px);
+}
+
+.odin-intro-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: none;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.04);
+  color: rgba(40, 40, 50, 0.45);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.odin-intro-close:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: rgba(40, 40, 50, 0.8);
+}
+
+.odin-intro-head {
+  margin-top: 0;
+  margin-bottom: 0.15rem;
+  line-height: 0;
+}
+
+.odin-intro-name {
+  margin-top: 0.35rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(60, 60, 60, 0.55);
+}
+
+.odin-intro-say {
+  margin-top: 0.35rem;
+  min-height: 3.4em;
+  max-width: 30rem;
+  font-size: 1.12rem;
+  line-height: 1.55;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: rgba(28, 30, 45, 0.92);
+}
+
+.odin-intro-actions {
+  margin-top: 1.4rem;
+}
+
+.odin-intro-field {
+  margin-top: 1.4rem;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.odin-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+/* Prominent type-your-own field, with an inline submit affordance */
+.odin-intro-bigfield {
+  position: relative;
+  width: 100%;
+  max-width: 30rem;
+}
+.odin-intro-bigfield-input {
+  width: 100%;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: rgba(255, 255, 255, 0.85);
+  border-radius: 16px;
+  padding: 0.95rem 1.2rem;
+  font-size: 1.05rem;
+  font-weight: 500;
+  text-align: center;
+  color: rgba(30, 30, 30, 0.95);
+  outline: none;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.odin-intro-bigfield-input::placeholder {
+  color: rgba(60, 60, 60, 0.4);
+  font-weight: 400;
+}
+.odin-intro-bigfield-input:focus {
+  border-color: rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.08);
+}
+
+.odin-intro-hint {
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(60, 60, 60, 0.42);
+}
+
+/* Horizontally scrollable pill carousel, with soft fade edges */
+.odin-carousel {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 30rem;
+  padding: 0.15rem 0.25rem 0.5rem;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+}
+.odin-carousel::-webkit-scrollbar {
+  display: none;
+}
+.odin-carousel .odin-pill {
+  flex: 0 0 auto;
+  scroll-snap-align: center;
+}
+
+.odin-pill {
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.7);
+  color: rgba(40, 40, 40, 0.9);
+  font-size: 0.86rem;
+  font-weight: 600;
+  padding: 0.46rem 0.95rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.14s ease, transform 0.14s ease, box-shadow 0.14s ease,
+    border-color 0.14s ease, color 0.14s ease;
+}
+.odin-pill:hover {
+  background: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.14);
+}
+.odin-pill.selected {
+  background: rgba(30, 30, 30, 0.92);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+}
+
+.odin-intro-custom {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 24rem;
+}
+.odin-glass-input {
+  flex: 1;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: rgba(255, 255, 255, 0.8);
+  border-radius: 12px;
+  padding: 0.6rem 0.85rem;
+  font-size: 0.9rem;
+  color: rgba(35, 35, 35, 0.92);
+  outline: none;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.odin-glass-input:focus {
+  border-color: rgba(0, 0, 0, 0.4);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.08);
+}
+
+.odin-intro-confirm {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.85rem;
+  overflow: hidden;
+}
+.odin-intro-confirm-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: rgba(70, 70, 70, 0.85);
+}
+.odin-intro-confirm-text svg {
+  color: rgba(40, 40, 40, 0.7);
+}
+
+.odin-intro-skip {
+  margin-top: 1.3rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: rgba(60, 60, 80, 0.5);
+  transition: color 0.12s ease;
+}
+.odin-intro-skip:hover {
+  color: rgba(60, 60, 80, 0.85);
+}
+
+/* Shared glass buttons for the intro */
+.odin-glass-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border: none;
+  cursor: pointer;
+  padding: 0.7rem 1.4rem;
+  border-radius: 13px;
+  font-size: 0.94rem;
+  font-weight: 650;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease,
+    opacity 0.14s ease;
+}
+.odin-glass-btn.primary {
+  background: rgba(35, 35, 35, 0.92);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+.odin-glass-btn.primary:hover {
+  transform: translateY(-1px);
+  background: rgba(20, 20, 20, 0.96);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.26);
+}
+.odin-glass-btn.ghost {
+  background: rgba(255, 255, 255, 0.7);
+  color: rgba(40, 40, 40, 0.9);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  padding: 0.6rem 1.05rem;
+  font-size: 0.88rem;
+}
+.odin-glass-btn.ghost:hover {
+  background: rgba(255, 255, 255, 0.95);
+}
+.odin-glass-btn:active {
+  transform: scale(0.97);
+}
+.odin-glass-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+  transform: none;
+}
+
+/* ── AI-suggested follow-up question pills (exploration highlight) ── */
+.exp-suggest-pills {
+  margin-bottom: 0.55rem;
+  padding: 0.4rem 0.45rem;
+  overflow: hidden;
+}
+
+.exp-suggest-scroll {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.4rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 0.75rem,
+    #000 calc(100% - 0.75rem),
+    transparent 100%
+  );
+}
+
+.exp-suggest-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.exp-suggest-pill {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.45);
+  color: rgba(40, 40, 40, 0.88);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.38rem 0.8rem;
+  border-radius: 999px;
+  cursor: pointer;
+  backdrop-filter: blur(clamp(1px, 0.125em, 4px));
+  -webkit-backdrop-filter: blur(clamp(1px, 0.125em, 4px));
+  box-shadow: inset 0 0.125em 0.125em rgba(0, 0, 0, 0.04),
+    0 2px 8px rgba(0, 0, 0, 0.06);
+  transition: background 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.exp-suggest-pill:hover {
+  background: rgba(255, 255, 255, 0.72);
+  transform: translateY(-1px);
+  box-shadow: inset 0 0.125em 0.125em rgba(0, 0, 0, 0.04),
+    0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.exp-suggest-pill:active {
+  transform: scale(0.98);
+}
+
+.exp-suggest-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: rgba(70, 70, 70, 0.75);
+  padding: 0.35rem 0.5rem;
+}
+
+.odin-coach-wait {
+  margin-top: 0.7rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: rgba(60, 60, 60, 0.6);
+  font-weight: 500;
+}
+
+.odin-coach-actions {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+/* Primary action(s): full-width buttons, side by side if there are two. */
+.coach-cta-row {
+  display: flex;
+  gap: 0.5rem;
+}
+.coach-cta-row .tour-btn {
+  flex: 1;
+  justify-content: center;
+  padding: 0.6rem 0.95rem;
+}
+
+/* Subtle text links underneath: Skip tour (left) and Back (right). */
+.coach-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.coach-meta-row:only-child {
+  justify-content: flex-start;
+}
+.tour-link {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: rgba(60, 60, 60, 0.55);
+  padding: 0.3rem 0.1rem;
+  white-space: nowrap;
+  transition: color 0.12s ease;
+}
+.tour-link:hover {
+  color: rgba(30, 30, 30, 0.9);
 }
 
 /* ============================================================
@@ -3992,28 +4661,11 @@ kbd {
 }
 
 .exp-sources-header {
-  all: unset;
-  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 0.375rem;
   width: 100%;
   padding: 0.625rem 0.75rem;
-  cursor: pointer;
-  transition: background 120ms ease;
-}
-
-.exp-sources-header:hover {
-  background: rgba(0, 0, 0, 0.04);
-}
-
-.exp-sources-chevron {
-  color: rgba(0, 0, 0, 0.35);
-  transition: transform 0.18s ease;
-}
-
-.exp-sources-chevron.open {
-  transform: rotate(180deg);
 }
 
 .exp-sources-title {

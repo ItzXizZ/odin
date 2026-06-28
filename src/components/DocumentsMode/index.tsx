@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { FileText, Plus, Trash2, X } from 'lucide-react'
+import { FileText, Plus, Trash2, X, ArrowRight } from 'lucide-react'
 import { useStore, type WritingDocument } from '../../store/useStore'
+import { useTutorial } from '../../lib/tutorial'
 
 function docPreview(doc: WritingDocument): string {
   const tab = doc.tabs.find((t) => t.id === doc.activeTabId) ?? doc.tabs[0]
@@ -27,6 +28,9 @@ export default function DocumentsMode({ onClose }: { onClose?: () => void }) {
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
 
+  const { active: tourActive, step: tourStep, next: tourNext } = useTutorial()
+  const onboarding = tourActive && tourStep?.id === 'write-documents'
+
   const openDocument = (id: string) => {
     setActiveDocumentId(id)
     onClose?.()
@@ -34,7 +38,8 @@ export default function DocumentsMode({ onClose }: { onClose?: () => void }) {
 
   const handleNew = () => {
     createDocument()
-    onClose?.()
+    // During onboarding keep the library up; the coach advances on its own.
+    if (!onboarding) onClose?.()
   }
 
   const startRename = (doc: WritingDocument) => {
@@ -76,15 +81,22 @@ export default function DocumentsMode({ onClose }: { onClose?: () => void }) {
             <Plus size={14} />
             New document
           </button>
-          {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-lg p-1.5 text-white/50 transition hover:bg-white/10 hover:text-white/80"
-              title="Close (Esc)"
-            >
-              <X size={16} />
+          {onboarding ? (
+            <button type="button" onClick={() => tourNext()} className="doc-library-new-btn">
+              Next
+              <ArrowRight size={14} />
             </button>
+          ) : (
+            onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-lg p-1.5 text-white/50 transition hover:bg-white/10 hover:text-white/80"
+                title="Close (Esc)"
+              >
+                <X size={16} />
+              </button>
+            )
           )}
           </div>
         </div>

@@ -7,13 +7,56 @@ import StylismMode from './WriteMode/StylismMode'
 import HomeMode from './HomeMode'
 import UserMenu from './UserMenu'
 import TutorialOverlay from './TutorialOverlay'
-import { TutorialProvider } from '../lib/tutorial'
+import { TutorialProvider, useTutorial } from '../lib/tutorial'
+import { hasOnboarded } from '../lib/onboarding'
+import { hasExistingWork } from '../lib/tutorial'
 import logo from './logo.png'
 
+/**
+ * Kicks off the guided "talking Odin" onboarding the first time a brand-new
+ * user lands in the app (once the store has hydrated). Lives inside the
+ * TutorialProvider so it can call start().
+ *
+ * We only auto-start for genuinely new users (no existing work). Returning
+ * users who already have adventures/documents won't be interrupted — they can
+ * launch the tour from the logo, and the tour will offer to spin up a fresh
+ * adventure first so their work stays untouched.
+ */
+function OnboardingAutostart() {
+  const { start } = useTutorial()
+  const startedRef = useRef(false)
+
+  useEffect(() => {
+    if (hasOnboarded() || startedRef.current) return
+    let cancelled = false
+    const begin = () => {
+      if (cancelled || startedRef.current || hasOnboarded()) return
+      // Don't ambush a returning user mid-work with an auto-tour.
+      if (hasExistingWork()) return
+      startedRef.current = true
+      start()
+    }
+    if (useStore.persist.hasHydrated()) {
+      const t = setTimeout(begin, 700)
+      return () => {
+        cancelled = true
+        clearTimeout(t)
+      }
+    }
+    const unsub = useStore.persist.onFinishHydration(() => setTimeout(begin, 700))
+    return () => {
+      cancelled = true
+      unsub?.()
+    }
+  }, [start])
+
+  return null
+}
+
 const TABS: { id: AppTab; label: string }[] = [
-  { id: 'write',       label: 'Write'      },
   { id: 'exploration', label: 'Exploration' },
-  { id: 'stylism',     label: 'Stylism'    },
+  { id: 'write',       label: 'Write'       },
+  { id: 'stylism',     label: 'Style'       },
 ]
 
 export default function Layout() {
@@ -106,6 +149,7 @@ export default function Layout() {
         </main>
       </div>
 
+      <OnboardingAutostart />
       <TutorialOverlay />
     </TutorialProvider>
   )

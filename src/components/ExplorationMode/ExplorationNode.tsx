@@ -12,121 +12,17 @@ import ErrorBoundary from '../ErrorBoundary'
 
 import ExplorationVisual from './ExplorationVisual'
 
-import MessageSourcesPanel from './MessageSourcesPanel'
+import { getEmbedFrameSrc, isReaderProxySrc } from './embedUtils'
 
-import { extractSourcesFromText, mergeSources } from '../../lib/sources'
+import {
+  clearPendingEmbedHighlight,
+  ensureEmbedHighlightStyles,
+  showPendingEmbedHighlight,
+} from './embedHighlights'
 
+import { readIframeScrollTop, scheduleIframeScrollRestore } from '../../lib/embedScroll'
 
-
-/* ---------- persistent highlight marking (rough, line-by-line) ---------- */
-
-
-
-function unwrapMarks(root: HTMLElement) {
-
-  root.querySelectorAll('span.branch-mark, span.branch-mark-pending').forEach((span) => {
-
-    const parent = span.parentNode
-
-    if (!parent) return
-
-    while (span.firstChild) parent.insertBefore(span.firstChild, span)
-
-    parent.removeChild(span)
-
-  })
-
-  root.normalize()
-
-}
-
-
-
-function markPhrase(root: HTMLElement, phrase: string, className = 'branch-mark') {
-
-  const target = phrase.trim()
-
-  if (target.length < 2) return
-
-
-
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-
-  const nodes: { node: Text; start: number }[] = []
-
-  let full = ''
-
-  let n: Node | null
-
-  while ((n = walker.nextNode())) {
-
-    nodes.push({ node: n as Text, start: full.length })
-
-    full += (n as Text).nodeValue ?? ''
-
-  }
-
-
-
-  const idx = full.indexOf(target)
-
-  if (idx === -1) return
-
-  const end = idx + target.length
-
-
-
-  for (const { node, start } of nodes) {
-
-    const nodeStart = start
-
-    const nodeEnd = start + (node.nodeValue?.length ?? 0)
-
-    if (nodeEnd <= idx || nodeStart >= end) continue
-
-
-
-    const a = Math.max(idx, nodeStart) - nodeStart
-
-    const b = Math.min(end, nodeEnd) - nodeStart
-
-
-
-    let piece: Text = node
-
-    if (a > 0) piece = piece.splitText(a)
-
-    if (b - a < (piece.nodeValue?.length ?? 0)) piece.splitText(b - a)
-
-
-
-    const span = document.createElement('span')
-
-    span.className = className
-
-    piece.parentNode?.insertBefore(span, piece)
-
-    span.appendChild(piece)
-
-  }
-
-}
-
-
-
-function applyMarks(root: HTMLElement, phrases: string[], pendingPhrase?: string) {
-
-  unwrapMarks(root)
-
-  for (const p of phrases) markPhrase(root, p)
-
-  if (pendingPhrase) markPhrase(root, pendingPhrase, 'branch-mark-pending')
-
-}
-
-
-
-/* ----------------------------------------------------------------------- */
+import { applyMarks, applyPersistedMarks } from './textMarks'
 
 
 
@@ -244,7 +140,7 @@ function VisualProgressBar({ status }: { status: string }) {
 
 
 
-function ExplorationNode({ data, selected }: NodeProps<ExplorationNodeData>) {
+function ExplorationNode({ id, data, selected }: NodeProps<ExplorationNodeData>) {
 
   const {
 
@@ -276,12 +172,57 @@ function ExplorationNode({ data, selected }: NodeProps<ExplorationNodeData>) {
 
     embedUrl,
 
+    embedScrollTop,
+
+    onEmbedScrollChange,
+
+    onEmbedExcerpt,
+
     onLinkClick,
 
   } = data
 
   const responseRef = useRef<HTMLDivElement>(null)
   const gripRef = useRef<HTMLDivElement>(null)
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+  const scrollSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scrollRestoreTimers = useRef<ReturnType<typeof setTimeout>[]>([])
+  const lastAppliedScrollRef = useRef<number | null>(null)
+  const embedScrollTargetRef = useRef(embedScrollTop ?? 0)
+  const highlightsRef = useRef(highlights)
+  const pendingHighlightRef = useRef(pendingHighlight)
+  const onEmbedExcerptRef = useRef(onEmbedExcerpt)
+  const onEmbedScrollChangeRef = useRef(onEmbedScrollChange)
+
+  useEffect(() => {
+    embedScrollTargetRef.current = embedScrollTop ?? 0
+  }, [embedScrollTop])
+
+  useEffect(() => {
+    highlightsRef.current = highlights
+  }, [highlights])
+
+  useEffect(() => {
+    pendingHighlightRef.current = pendingHighlight
+  }, [pendingHighlight])
+
+  useEffect(() => {
+    onEmbedExcerptRef.current = onEmbedExcerpt
+    onEmbedScrollChangeRef.current = onEmbedScrollChange
+  }, [onEmbedExcerpt, onEmbedScrollChange])
+
+  const clearScrollRestoreTimers = () => {
+    scrollRestoreTimers.current.forEach(clearTimeout)
+    scrollRestoreTimers.current = []
+  }
+
+  const tryRestoreScroll = (doc: Document, target: number) => {
+    if (target <= 0) return
+    if (lastAppliedScrollRef.current === target && readIframeScrollTop(doc) >= target - 8) return
+    clearScrollRestoreTimers()
+    scheduleIframeScrollRestore(doc, target, scrollRestoreTimers.current)
+    lastAppliedScrollRef.current = target
+  }
 
   const rfStore = useStoreApi()
 
@@ -302,6 +243,9 @@ function ExplorationNode({ data, selected }: NodeProps<ExplorationNodeData>) {
   const [iframeError, setIframeError] = useState(false)
   const [userWidth, setUserWidth] = useState<number | null>(null)
   const [userHeight, setUserHeight] = useState<number | null>(null)
+
+  const embedFrameSrc = embedUrl ? getEmbedFrameSrc(embedUrl) : ''
+  const isReaderProxy = isReaderProxySrc(embedFrameSrc)
 
   const width = userWidth ?? defaultWidth
   const maxHeight = userHeight ?? defaultMaxHeight
@@ -370,29 +314,7 @@ function ExplorationNode({ data, selected }: NodeProps<ExplorationNodeData>) {
 
 
 
-  const allSources = useMemo(
-
-    () =>
-
-      mergeSources(
-
-        storedSources,
-
-        extractSourcesFromText(prompt),
-
-        extractSourcesFromText(response)
-
-      ),
-
-    [storedSources, prompt, response]
-
-  )
-
-  const sourcesLoading = isLoading && allSources.length === 0
-
-
-
-  const highlightKey = highlights.map((h) => h.id + h.text).join('|')
+  const highlightKey = highlights.map((h) => `${h.id}:${h.text}:${h.ratio}`).join('|')
 
   useEffect(() => {
 
@@ -421,7 +343,122 @@ function ExplorationNode({ data, selected }: NodeProps<ExplorationNodeData>) {
 
   }, [response, highlightKey, pendingHighlight, visual])
 
+  // Reader-proxied embeds: scroll persistence, highlight restore, text selection.
+  useEffect(() => {
+    if (!isEmbedNode || !isReaderProxy || iframeError) return
+    const iframe = iframeRef.current
+    if (!iframe) return
 
+    let teardown: (() => void) | undefined
+    let highlightTimers: ReturnType<typeof setTimeout>[] = []
+
+    const paintHighlights = (doc: Document) => {
+      ensureEmbedHighlightStyles(doc)
+      const pending = pendingHighlightRef.current
+      const marks = highlightsRef.current.map((h) => h.text)
+      try {
+        if (!pending) {
+          clearPendingEmbedHighlight(doc)
+          applyMarks(doc.body, marks)
+        } else {
+          applyPersistedMarks(doc.body, marks)
+        }
+      } catch {
+        /* skip */
+      }
+    }
+
+    const restoreScroll = (doc: Document) => {
+      tryRestoreScroll(doc, embedScrollTargetRef.current)
+    }
+
+    const attach = () => {
+      teardown?.()
+      highlightTimers.forEach(clearTimeout)
+      highlightTimers = []
+
+      let doc: Document | null = null
+      try {
+        doc = iframe.contentDocument
+      } catch {
+        return
+      }
+      if (!doc?.body) return
+
+      restoreScroll(doc)
+
+      paintHighlights(doc)
+      ;[120, 450, 1200].forEach((delay) => {
+        highlightTimers.push(setTimeout(() => paintHighlights(doc!), delay))
+      })
+
+      const saveScroll = () => {
+        const top = readIframeScrollTop(doc!)
+        if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current)
+        scrollSaveTimer.current = setTimeout(() => {
+          onEmbedScrollChangeRef.current?.(top)
+        }, 200)
+      }
+
+      const onMouseUp = () => {
+        const sel = doc!.getSelection()
+        const text = sel?.toString().trim() || ''
+        if (!sel || sel.isCollapsed || text.length < 2) return
+
+        const range = sel.getRangeAt(0).cloneRange()
+        const rect = range.getBoundingClientRect()
+        const rootRect = iframe.getBoundingClientRect()
+        const ratio = rootRect.height
+          ? (rect.top + rect.height / 2 - rootRect.top) / rootRect.height
+          : 0.5
+
+        showPendingEmbedHighlight(doc!, range)
+        onEmbedExcerptRef.current?.({ text, ratio: Math.max(0, Math.min(1, ratio)) })
+        sel.removeAllRanges()
+      }
+
+      doc.addEventListener('scroll', saveScroll, { passive: true, capture: true })
+      doc.addEventListener('mouseup', onMouseUp)
+
+      teardown = () => {
+        try {
+          if (doc) {
+            if (scrollSaveTimer.current) clearTimeout(scrollSaveTimer.current)
+            onEmbedScrollChangeRef.current?.(readIframeScrollTop(doc))
+          }
+        } catch {
+          /* ignore */
+        }
+        doc?.removeEventListener('scroll', saveScroll, true)
+        doc?.removeEventListener('mouseup', onMouseUp)
+        highlightTimers.forEach(clearTimeout)
+        highlightTimers = []
+        clearScrollRestoreTimers()
+      }
+    }
+
+    const onLoad = () => attach()
+    iframe.addEventListener('load', onLoad)
+    if (iframe.contentDocument?.readyState === 'complete') attach()
+
+    return () => {
+      iframe.removeEventListener('load', onLoad)
+      teardown?.()
+      clearScrollRestoreTimers()
+    }
+  }, [isEmbedNode, isReaderProxy, iframeError, embedUrl, highlightKey, pendingHighlight])
+
+  // Re-apply scroll when saved position arrives after async hydration.
+  useEffect(() => {
+    if (!isEmbedNode || !isReaderProxy || iframeError) return
+    const doc = iframeRef.current?.contentDocument
+    if (!doc?.body) return
+    const target = embedScrollTop ?? 0
+    embedScrollTargetRef.current = target
+    lastAppliedScrollRef.current = null
+    if (target <= 0) return
+    tryRestoreScroll(doc, target)
+  }, [isEmbedNode, isReaderProxy, iframeError, embedScrollTop, embedUrl])
 
   const loadingMessage =
 
@@ -537,17 +574,25 @@ function ExplorationNode({ data, selected }: NodeProps<ExplorationNodeData>) {
 
                     <iframe
 
-                      src={embedUrl}
+                      ref={iframeRef}
+
+                      src={embedFrameSrc}
 
                       title={embedUrl}
 
-                      className="h-[400px] w-full border-0 bg-white"
+                      className={`h-[400px] w-full border-0 bg-white ${isReaderProxy ? 'select-text' : ''}`}
 
                       sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
 
                       onError={() => setIframeError(true)}
 
                     />
+
+                    {isReaderProxy && (
+                      <p className="pointer-events-none absolute left-2 top-2 rounded-md bg-white/85 px-2 py-0.5 text-[9px] text-black/40 shadow-sm backdrop-blur-sm">
+                        Select text to ask a follow-up
+                      </p>
+                    )}
 
                     <a
 
@@ -620,12 +665,6 @@ function ExplorationNode({ data, selected }: NodeProps<ExplorationNodeData>) {
             )}
 
           </div>
-
-
-
-          {!isEmbedNode && (
-            <MessageSourcesPanel sources={allSources} isLoading={sourcesLoading} onLinkClick={onLinkClick} />
-          )}
 
         </div>
 
@@ -707,12 +746,13 @@ function explorationNodeEqual(
     pd.visualStatus === nd.visualStatus &&
     pd.visualChoice === nd.visualChoice &&
     pd.embedUrl === nd.embedUrl &&
+    pd.embedScrollTop === nd.embedScrollTop &&
     pd.pendingHighlight === nd.pendingHighlight &&
     pd.isReplyTarget === nd.isReplyTarget &&
     pd.sources === nd.sources &&
     // compare highlights by content, not reference
-    pd.highlights?.map((h) => h.id + h.text).join('|') ===
-      nd.highlights?.map((h) => h.id + h.text).join('|') &&
+    pd.highlights?.map((h) => `${h.id}:${h.text}:${h.ratio}`).join('|') ===
+      nd.highlights?.map((h) => `${h.id}:${h.text}:${h.ratio}`).join('|') &&
     // onReplyFull presence matters (undefined = branch already exists), not the reference
     (pd.onReplyFull === undefined) === (nd.onReplyFull === undefined)
   )
