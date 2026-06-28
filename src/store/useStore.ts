@@ -398,7 +398,11 @@ export const useStore = create<AppState>()(
   persist(
     (set, get) => ({
       activeTab: 'home',
-      apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY ?? '',
+      // SECURITY: never inline the Anthropic key into the frontend bundle.
+      // Leaving this empty makes the browser send no key; the server then uses
+      // its own server-side ANTHROPIC_API_KEY (see server.js). Users may still
+      // paste a personal key via the in-app Settings panel.
+      apiKey: '',
       showSettings: false,
 
       sessions: [],
