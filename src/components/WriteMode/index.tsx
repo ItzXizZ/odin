@@ -14,7 +14,7 @@ import { diffWords } from 'diff'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useStore } from '../../store/useStore'
 import { streamChat } from '../../lib/claude'
-import { compileStyleGuide, buildAgentSystemPrompt, parseEditResponse, parseAgentResponse, applyEdits, type ParsedEdit } from '../../lib/style'
+import { compileStyleGuide, buildAgentSystemPrompt, parseEditResponse, parseAgentResponse, parseDraftResponse, applyEdits, type ParsedEdit } from '../../lib/style'
 import {
   runStyleAgentTurn,
   runConflictResolutionTurn,
@@ -27,6 +27,7 @@ import {
   normalizeAiResponse,
   applyRichFormattingToEditor,
   looksLikeMarkdown,
+  looksLikeJsonResponse,
   markdownishToHtml,
 } from '../../lib/aiText'
 import { diffToHtml } from './diffHtml'
@@ -140,23 +141,6 @@ function highlightPassageInEditor(ed: Editor, thread: WriteChatThread) {
       .setHighlight({ color: REF_HIGHLIGHT_COLOR })
       .setTextSelection(to)
       .run()
-  }
-}
-
-function parseDraftResponse(raw: string): { content: string; message?: string } | null {
-  let text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
-  const first = text.indexOf('{')
-  const last = text.lastIndexOf('}')
-  if (first === -1 || last <= first) return null
-  try {
-    const obj = JSON.parse(text.slice(first, last + 1))
-    if (typeof obj.content !== 'string' || !obj.content.trim()) return null
-    return {
-      content: obj.content.trim(),
-      message: typeof obj.message === 'string' ? obj.message.trim() : undefined,
-    }
-  } catch {
-    return null
   }
 }
 
@@ -793,15 +777,20 @@ INSTRUCTION: ${instruction}`
         // Empty-doc draft path (unchanged).
         if (isEmptyDoc) {
           const drafted = parseDraftResponse(raw)
-          const generated = drafted?.content ?? raw.trim()
-          if (!generated) {
+          if (!drafted?.content) {
             updateThreadMessages((prev) => [
               ...prev,
-              { id: (Date.now() + 1).toString(), role: 'assistant', content: 'Nothing was generated — try again.' },
+              {
+                id: (Date.now() + 1).toString(),
+                role: 'assistant',
+                content: looksLikeJsonResponse(raw)
+                  ? "I couldn't read that draft cleanly — please try again."
+                  : 'Nothing was generated — try again.',
+              },
             ])
             return
           }
-          enterReview(baseText, generated, instruction, drafted?.message)
+          enterReview(baseText, drafted.content, instruction, drafted.message)
           return
         }
 
@@ -888,7 +877,22 @@ INSTRUCTION: ${instruction}`
           }
           newText = applyEdits(currentText, parsed.edits).text
         } else {
-          newText = raw.trim()
+          const drafted = parseDraftResponse(raw)
+          if (drafted?.content) {
+            enterReview(baseText, drafted.content, instruction, drafted.message)
+            return
+          }
+          updateThreadMessages((prev) => [
+            ...prev,
+            {
+              id: (Date.now() + 1).toString(),
+              role: 'assistant',
+              content: looksLikeJsonResponse(raw)
+                ? "I couldn't apply that cleanly — please try again."
+                : 'No changes needed — your text already works here.',
+            },
+          ])
+          return
         }
 
         if (!newText.trim() || newText.trim() === currentText.trim()) {

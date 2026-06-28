@@ -14,6 +14,8 @@
  *   wholesale rewrites.
  */
 
+import { unescapeModelText } from './aiText'
+
 export interface StyleRule {
   id: string
   label: string
@@ -369,12 +371,15 @@ export function parseEditResponse(raw: string): EditResponse | null {
   const tryParse = (s: string): EditResponse | null => {
     try {
       const obj = JSON.parse(s)
-      const message = typeof obj.message === 'string' ? obj.message.trim() : undefined
+      const message = typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : undefined
       const edits = Array.isArray(obj) ? obj : obj?.edits
       if (!Array.isArray(edits)) return null
       const clean = edits
         .filter((e) => e && typeof e.find === 'string' && typeof e.replace === 'string')
-        .map((e) => ({ find: e.find as string, replace: e.replace as string }))
+        .map((e) => ({
+          find: unescapeModelText(e.find as string),
+          replace: unescapeModelText(e.replace as string),
+        }))
       return { edits: clean, message: message || undefined }
     } catch {
       return null
@@ -435,7 +440,7 @@ export function parseAgentResponse(raw: string): AgentResponse | null {
     const type = obj?.type as string | undefined
 
     if (type === 'chat') {
-      const message = typeof obj.message === 'string' ? obj.message.trim() : ''
+      const message = typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : ''
       if (!message) return null
       return { type: 'chat', message }
     }
@@ -444,20 +449,51 @@ export function parseAgentResponse(raw: string): AgentResponse | null {
       const edits: ParsedEdit[] = Array.isArray(obj.edits)
         ? obj.edits
             .filter((e: unknown) => e && typeof (e as ParsedEdit).find === 'string' && typeof (e as ParsedEdit).replace === 'string')
-            .map((e: ParsedEdit) => ({ find: e.find, replace: e.replace }))
+            .map((e: ParsedEdit) => ({
+              find: unescapeModelText(e.find),
+              replace: unescapeModelText(e.replace),
+            }))
         : []
-      const message = typeof obj.message === 'string' ? obj.message.trim() : undefined
+      const message = typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : undefined
       return { type: 'edit', message, edits }
     }
 
     if (type === 'create') {
-      const content = typeof obj.content === 'string' ? obj.content.trim() : ''
+      const content = typeof obj.content === 'string' ? unescapeModelText(obj.content.trim()) : ''
       if (!content) return null
-      const message = typeof obj.message === 'string' ? obj.message.trim() : undefined
+      const message = typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : undefined
       return { type: 'create', message, content }
     }
 
+    // Legacy empty-doc shape: {"message":"…","content":"…"} without "type".
+    if (typeof obj.content === 'string' && obj.content.trim()) {
+      return {
+        type: 'create',
+        message: typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : undefined,
+        content: unescapeModelText(obj.content.trim()),
+      }
+    }
+
     return null
+  } catch {
+    return null
+  }
+}
+
+/** Parse the empty-document draft shape: {"message":"…","content":"…"}. */
+export function parseDraftResponse(raw: string): { content: string; message?: string } | null {
+  let text = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+  text = sanitizeJsonStrings(text)
+  const first = text.indexOf('{')
+  const last = text.lastIndexOf('}')
+  if (first === -1 || last <= first) return null
+  try {
+    const obj = JSON.parse(text.slice(first, last + 1))
+    if (typeof obj.content !== 'string' || !obj.content.trim()) return null
+    return {
+      content: unescapeModelText(obj.content.trim()),
+      message: typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : undefined,
+    }
   } catch {
     return null
   }

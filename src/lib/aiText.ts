@@ -20,6 +20,17 @@ export function normalizeAiResponse(raw: string): string {
   return stripCodeFences(raw)
 }
 
+/** Turn model escape sequences into real whitespace after JSON.parse. */
+export function unescapeModelText(text: string): string {
+  return text.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+}
+
+/** True when output looks like structured JSON rather than plain prose. */
+export function looksLikeJsonResponse(raw: string): boolean {
+  const t = stripCodeFences(raw).trim()
+  return t.startsWith('{') && (t.includes('"content"') || t.includes('"edits"') || t.includes('"type"'))
+}
+
 /** Convert Markdown Claude tends to emit into TipTap-friendly HTML. */
 export function markdownishToHtml(text: string): string {
   const esc = (s: string) =>
