@@ -311,9 +311,9 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
       <div className="flex-shrink-0 px-6 pt-6 pb-4">
         <div className="mx-auto max-w-4xl flex items-end justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="context-house-header-title">Context House</h1>
+            <h1 className="context-house-header-title">The Context House</h1>
             <p className="context-house-header-sub">
-              Research materials scoped to each document
+              This is the context for your document that the AI will use.
             </p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -331,7 +331,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowDocPicker(false)} />
                   <div className="context-picker-menu z-50">
-                    <p className="context-picker-label">Context for document</p>
+                    <p className="context-picker-label">Document</p>
                     {documents.map((doc) => {
                       const count =
                         (doc.context?.pdfs?.length ?? 0) +
@@ -373,7 +373,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
                   className="btn-primary flex items-center gap-2"
                 >
                   <PenTool size={13} />
-                  Write
+                  Compose
                 </button>
               )
             )}
@@ -428,7 +428,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
 
                 <div className="ctx-slot-face">
                   <div className="ctx-slot-top">
-                    <span className="ctx-slot-title">Documents</span>
+                    <span className="ctx-slot-title">Sources</span>
                     {pdfs.length > 0 && <span className="ctx-count-pill">{pdfs.length}</span>}
                   </div>
                   <button
@@ -444,7 +444,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
                     }
                   </button>
                   {pdfs.length === 0 && !uploadingPdf && (
-                    <p className="ctx-empty-hint">Drop PDF or click +</p>
+                    <p className="ctx-empty-hint">PDFs for the AI to read</p>
                   )}
                 </div>
               </div>
@@ -568,7 +568,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
                     }
                   </button>
                   {images.length === 0 && !uploadingImg && (
-                    <p className="ctx-empty-hint">Drop image or click +</p>
+                    <p className="ctx-empty-hint">Images for the AI to reference</p>
                   )}
                 </div>
               </div>
@@ -665,7 +665,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
                     <Plus size={26} strokeWidth={2} />
                   </button>
                   {linkedAdventures.length === 0 && (
-                    <p className="ctx-empty-hint">Link exploration threads</p>
+                    <p className="ctx-empty-hint">Link a research adventure</p>
                   )}
                 </div>
               </div>
@@ -692,7 +692,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
                 <div className="ctx-panel">
                   {availableAdventures.length > 0 && (
                     <div className="ctx-adv-picker-section">
-                      <p className="ctx-adv-picker-label">Link an adventure</p>
+                      <p className="ctx-adv-picker-label">Connect an adventure</p>
                       {availableAdventures.map((adv) => (
                         <button
                           key={adv.id}
@@ -710,7 +710,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
 
                   {linkedAdventures.length === 0 && availableAdventures.length === 0 && (
                     <p className="ctx-empty-hint" style={{ padding: '0.65rem' }}>
-                      Create an adventure in Exploration mode first
+                      Begin an adventure in Research first
                     </p>
                   )}
 

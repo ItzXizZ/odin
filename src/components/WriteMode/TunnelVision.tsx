@@ -123,7 +123,7 @@ Instruction: ${baseInstruction}${refineNote}`
       exit={{ opacity: 0 }}
       transition={{ duration: 0.25 }}
     >
-      <button className="tunnel-close" onClick={onClose} title="Exit focus (Esc)">
+      <button className="tunnel-close" onClick={onClose} title="Exit Refine (Esc)">
         <X size={18} />
       </button>
 
@@ -168,7 +168,7 @@ Instruction: ${baseInstruction}${refineNote}`
               }
             }}
             rows={1}
-            placeholder="How should this sentence change? (e.g. make it sharper, add tension)"
+            placeholder="How should this sentence be elevated? (e.g. sharpen the tension, tighten the rhythm)"
             className="glass-input tunnel-input"
           />
           <button
@@ -177,7 +177,7 @@ Instruction: ${baseInstruction}${refineNote}`
             disabled={loading}
           >
             {loading ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-            Generate
+            Compose
           </button>
         </div>
 
@@ -229,7 +229,7 @@ Instruction: ${baseInstruction}${refineNote}`
                       generate('refine')
                     }
                   }}
-                  placeholder="Feedback to refine the selected option…"
+                  placeholder="Refine the selected option…"
                   className="glass-input tunnel-feedback"
                 />
                 <button className="btn-ghost tunnel-refine-btn" onClick={() => generate('refine')} disabled={loading}>
@@ -242,7 +242,7 @@ Instruction: ${baseInstruction}${refineNote}`
                 onClick={() => selected !== null && onApply(options[selected])}
               >
                 <ArrowRight size={15} />
-                Use this version
+                Apply selection
               </button>
             </motion.div>
           )}

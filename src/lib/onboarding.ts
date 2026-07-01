@@ -78,3 +78,49 @@ export function markOnboarded(): void {
     /* ignore */
   }
 }
+
+/* ── Onboarding completion ──
+   `hasOnboarded` flips true the moment the tour *starts* (so we never auto-run
+   it twice). We track a separate "finished" flag for the moment the guided tour
+   actually completes or is dismissed — that's our cue to prompt a guest to sign
+   up. Listeners let the auth gate react the instant onboarding wraps up. */
+const ONBOARDING_FINISHED_KEY = 'odin-onboarding-finished-v1'
+
+const finishedListeners = new Set<() => void>()
+
+/** Has the guided onboarding been completed or dismissed at least once? */
+export function hasFinishedOnboarding(): boolean {
+  try {
+    return localStorage.getItem(ONBOARDING_FINISHED_KEY) === '1'
+  } catch {
+    return true // if storage is unavailable, don't trap the user in the tour
+  }
+}
+
+export function markOnboardingFinished(): void {
+  try {
+    localStorage.setItem(ONBOARDING_FINISHED_KEY, '1')
+  } catch {
+    /* ignore */
+  }
+  // Defer so listeners (which may setState) never run inside a React updater.
+  const notify = () => finishedListeners.forEach((fn) => fn())
+  if (typeof queueMicrotask === 'function') queueMicrotask(notify)
+  else setTimeout(notify, 0)
+}
+
+export function clearOnboardingFinished(): void {
+  try {
+    localStorage.removeItem(ONBOARDING_FINISHED_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Subscribe to onboarding completion. Returns an unsubscribe function. */
+export function onOnboardingFinished(fn: () => void): () => void {
+  finishedListeners.add(fn)
+  return () => {
+    finishedListeners.delete(fn)
+  }
+}

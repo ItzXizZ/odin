@@ -4,6 +4,7 @@ import { useStore, type AppTab } from '../store/useStore'
 import ExplorationMode from './ExplorationMode'
 import WriteMode from './WriteMode'
 import StylismMode from './WriteMode/StylismMode'
+import GradeMode from './GradeMode'
 import HomeMode from './HomeMode'
 import UserMenu from './UserMenu'
 import TutorialOverlay from './TutorialOverlay'
@@ -22,44 +23,52 @@ import logo from './logo.png'
  * launch the tour from the logo, and the tour will offer to spin up a fresh
  * adventure first so their work stays untouched.
  */
-function OnboardingAutostart() {
+function OnboardingAutostart({ force = false }: { force?: boolean }) {
   const { start } = useTutorial()
   const startedRef = useRef(false)
 
   useEffect(() => {
-    if (hasOnboarded() || startedRef.current) return
+    // Guests (force) always begin the tour straight away. Signed-in users only
+    // auto-start once, and never if they already have real work in progress.
+    if (startedRef.current) return
+    if (!force && hasOnboarded()) return
     let cancelled = false
     const begin = () => {
-      if (cancelled || startedRef.current || hasOnboarded()) return
-      // Don't ambush a returning user mid-work with an auto-tour.
-      if (hasExistingWork()) return
+      if (cancelled || startedRef.current) return
+      if (!force && (hasOnboarded() || hasExistingWork())) return
       startedRef.current = true
       start()
     }
+    // No delay for guests — drop them straight into the tutorial (the intro
+    // modal covers the home screen, so there's no flash).
+    const delay = force ? 0 : 700
     if (useStore.persist.hasHydrated()) {
-      const t = setTimeout(begin, 700)
+      const t = setTimeout(begin, delay)
       return () => {
         cancelled = true
         clearTimeout(t)
       }
     }
-    const unsub = useStore.persist.onFinishHydration(() => setTimeout(begin, 700))
+    const unsub = useStore.persist.onFinishHydration(() => setTimeout(begin, delay))
     return () => {
       cancelled = true
       unsub?.()
     }
-  }, [start])
+  }, [start, force])
 
   return null
 }
 
+const SHOW_CRITIC_TAB = false // temporarily hidden
+
 const TABS: { id: AppTab; label: string }[] = [
-  { id: 'exploration', label: 'Exploration' },
-  { id: 'write',       label: 'Write'       },
-  { id: 'stylism',     label: 'Style'       },
+  { id: 'exploration', label: 'Research' },
+  { id: 'write',       label: 'Compose'  },
+  { id: 'stylism',     label: 'Voice'    },
+  ...(SHOW_CRITIC_TAB ? [{ id: 'grade' as const, label: 'Critic' }] : []),
 ]
 
-export default function Layout() {
+export default function Layout({ guestTutorial = false }: { guestTutorial?: boolean }) {
   const { activeTab, setActiveTab } = useStore()
   const navRef = useRef<HTMLDivElement>(null)
 
@@ -143,13 +152,14 @@ export default function Layout() {
                 {activeTab === 'home'        && <HomeMode />}
                 {activeTab === 'exploration' && <ExplorationMode />}
                 {activeTab === 'stylism'     && <StylismMode />}
+                {activeTab === 'grade'       && <GradeMode />}
               </motion.div>
             </AnimatePresence>
           )}
         </main>
       </div>
 
-      <OnboardingAutostart />
+      <OnboardingAutostart force={guestTutorial} />
       <TutorialOverlay />
     </TutorialProvider>
   )

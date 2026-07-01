@@ -12,7 +12,7 @@ export default function LiveSourceFeed({ sources }: LiveSourceFeedProps) {
   return (
     <div className="exp-sources-panel nodrag">
       <div className="exp-sources-header">
-        <span className="exp-sources-title">Live Source Update</span>
+        <span className="exp-sources-title">Source Intelligence</span>
         <span className="exp-sources-meta">
           {count > 0 ? `${count} · relevance` : 'by relevance'}
         </span>
@@ -21,7 +21,7 @@ export default function LiveSourceFeed({ sources }: LiveSourceFeedProps) {
       <div className="exp-sources-body">
         {count === 0 ? (
           <p className="exp-sources-empty">
-            Sources appear here as messages are researched and cited…
+            Sources surface here as research is verified and cited…
           </p>
         ) : (
           <div className="exp-sources-list">

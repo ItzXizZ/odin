@@ -73,6 +73,24 @@ function makeDocument(title = 'Untitled', content = ''): WritingDocument {
   }
 }
 
+function isBlankDocument(doc: {
+  title?: string
+  tabs?: DocTab[]
+  context?: DocumentContext
+}): boolean {
+  const title = (doc.title ?? '').trim()
+  const tabs = doc.tabs ?? []
+  const hasText = tabs.some((t) => (t.content ?? '').replace(/<[^>]+>/g, '').trim().length > 0)
+  const ctx = doc.context ?? emptyDocumentContext()
+  const hasContext = Boolean(
+    ctx.pdfs.length ||
+      ctx.images.length ||
+      ctx.conversations.length ||
+      ctx.linkedAdventureIds.length
+  )
+  return (!title || title === 'Untitled') && !hasText && !hasContext
+}
+
 function patchActiveDocContext(
   s: { documents: WritingDocument[]; activeDocumentId: string | null },
   patch: (ctx: DocumentContext) => DocumentContext
@@ -283,12 +301,35 @@ function bumpHebbian(
   return [...map.values()]
 }
 
+/** A single problematic region Odin flags inside the document. */
+export interface GradeAnnotation {
+  /** Verbatim snippet copied from the document so it can be located + underlined. */
+  quote: string
+  /** Issue family, used to colour the highlight. */
+  category:
+    | 'clutter'
+    | 'wordy'
+    | 'passive'
+    | 'adverb'
+    | 'adjective'
+    | 'abstraction'
+    | 'vague'
+    | 'cliche'
+    | 'jargon'
+    | 'other'
+  /** What's wrong, grounded in Zinsser. */
+  issue: string
+  /** A concrete fix. */
+  suggestion: string
+}
+
 export interface GradeResult {
   overallScore: number
-  rubricScores: { criterion: string; score: number; maxScore: number; feedback: string }[]
-  strengths: string[]
-  improvements: string[]
+  /** A short, spoken-aloud verdict delivered by Odin (1–2 sentences). */
+  odinVerdict?: string
   summary: string
+  /** Problematic regions Odin underlines live in the document. */
+  annotations: GradeAnnotation[]
 }
 
 interface AppState {
@@ -377,7 +418,6 @@ interface AppState {
   setWritingPrompt: (prompt: string) => void
   setHighlightedText: (text: string) => void
   setStyleRules: (rules: StyleRule[]) => void
-  resetStyleRules: () => void
   /**
    * Reinforce rules from stylistic feedback: direct hits grow fully, then the
    * signal spreads stochastically through connected neighbors (2 hops, decaying
@@ -386,6 +426,8 @@ interface AppState {
   reinforceStyleRules: (ruleIds: string[]) => void
   /** Add a rule born from feedback, wired to its related rules. Returns id. */
   addStyleRule: (rule: { label: string; instruction: string; relatedRuleIds?: string[]; source?: StyleRule['source'] }) => string
+  /** Bulk-add principles from a writing sample analysis; wires similarity edges once. */
+  importStyleRules: (items: { label: string; instruction: string }[]) => string[]
   editStyleRule: (id: string, patch: Partial<Pick<StyleRule, 'label' | 'instruction' | 'enabled'>>) => void
   deleteStyleRule: (id: string) => void
   setStyleRulePosition: (id: string, x: number, y: number) => void
@@ -419,10 +461,8 @@ export const useStore = create<AppState>()(
       })(),
       liveSourceContext: '',
 
-      ...(() => {
-        const first = makeDocument()
-        return { documents: [first], activeDocumentId: first.id }
-      })(),
+      documents: [] as WritingDocument[],
+      activeDocumentId: null as string | null,
       writingPrompt: '',
       highlightedText: '',
       styleRules: DEFAULT_STYLE_RULES,
@@ -586,8 +626,8 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
       },
       deleteDocument: (id) =>
         set((s) => {
-          if (s.documents.length <= 1) return s
           const documents = s.documents.filter((d) => d.id !== id)
+          if (documents.length === s.documents.length) return s
           const activeDocumentId =
             s.activeDocumentId === id ? documents[0]?.id ?? null : s.activeDocumentId
           return { documents, activeDocumentId }
@@ -661,12 +701,6 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
       setWritingPrompt: (prompt) => set({ writingPrompt: prompt }),
       setHighlightedText: (text) => set({ highlightedText: text }),
       setStyleRules: (rules) => set({ styleRules: rules }),
-      resetStyleRules: () =>
-        set({
-          styleRules: DEFAULT_STYLE_RULES.map((r) => ({ ...r, x: undefined, y: undefined })),
-          styleConnections: [],
-          lastStyleActivation: null,
-        }),
 
       reinforceStyleRules: (ruleIds) =>
         set((s) => {
@@ -749,6 +783,63 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
         return id
       },
 
+      importStyleRules: (items) => {
+        if (items.length === 0) return []
+        const ids: string[] = []
+        set((s) => {
+          const existingKeys = new Set(
+            s.styleRules.map((r) => `${r.label.toLowerCase().trim()}|${r.instruction.toLowerCase().trim()}`)
+          )
+          const toAdd = items.filter((item) => {
+            const key = `${item.label.toLowerCase().trim()}|${item.instruction.toLowerCase().trim()}`
+            if (existingKeys.has(key)) return false
+            existingKeys.add(key)
+            return true
+          })
+          if (toAdd.length === 0) return s
+
+          const now = Date.now()
+          const born: StyleRule[] = []
+          const pairs: [string, string][] = []
+
+          for (const item of toAdd) {
+            const id = nanoid()
+            ids.push(id)
+            const rule: StyleRule = {
+              id,
+              label: item.label,
+              instruction: item.instruction,
+              enabled: true,
+              weight: 1.4,
+              useCount: 1,
+              lastActivatedAt: now,
+              createdAt: now,
+              source: 'ai',
+            }
+            born.push(rule)
+            const pool = [...s.styleRules, ...born.slice(0, -1)]
+            for (const other of pool) {
+              if (other.id === id) continue
+              if (ruleSimilarity(rule, other) >= 0.18) pairs.push([id, other.id])
+            }
+          }
+
+          return {
+            styleRules: [...s.styleRules, ...born],
+            styleConnections: pairs.length
+              ? bumpHebbian(s.styleConnections, pairs)
+              : s.styleConnections,
+            lastStyleActivation: {
+              directIds: ids,
+              spill: [],
+              newRuleIds: ids,
+              at: now,
+            },
+          }
+        })
+        return ids
+      },
+
       editStyleRule: (id, patch) =>
         set((s) => ({
           styleRules: s.styleRules.map((r) => (r.id === id ? { ...r, ...patch } : r)),
@@ -824,13 +915,25 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
     }),
     {
       name: 'scribe-storage',
-      version: 7,
+      version: 8,
       // Hydration is deferred to the auth layer so we load the *correct* user's
       // data once their identity is known (see AuthProvider).
       skipHydration: true,
       storage: createJSONStorage(() => workspaceStorage),
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>
+        if (version < 8 && Array.isArray(state.documents)) {
+          const docs = state.documents as Record<string, unknown>[]
+          state.documents = docs.filter((d) => !isBlankDocument(d as WritingDocument))
+          const activeId = state.activeDocumentId as string | null | undefined
+          if (
+            activeId &&
+            !(state.documents as Record<string, unknown>[]).some((d) => d.id === activeId)
+          ) {
+            state.activeDocumentId =
+              ((state.documents as Record<string, unknown>[])[0]?.id as string | undefined) ?? null
+          }
+        }
         if (version < 7 && Array.isArray(state.documents)) {
           state.documents = (state.documents as Record<string, unknown>[]).map((d) => {
             const tabs = d.tabs as DocTab[] | undefined

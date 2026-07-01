@@ -53,10 +53,10 @@ export default function MessageSourcesPanel({
         )}
         <span className="text-[10px] text-black/45">
           {isLoading && !hasSources
-            ? 'Researching sources…'
+            ? 'Verifying sources…'
             : hasSources
               ? `${sources.length} source${sources.length === 1 ? '' : 's'}`
-              : 'No sources yet'}
+              : 'No sources verified yet'}
         </span>
       </button>
 

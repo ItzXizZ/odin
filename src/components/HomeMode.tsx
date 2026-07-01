@@ -177,17 +177,18 @@ export default function HomeMode() {
           <SpeakingOdinLogo speaking={speaking} />
         </motion.div>
 
-        <h1 className="home-title">Welcome to Odin</h1>
+        <h1 className="home-title">Odin</h1>
+        <p className="home-sub">The best writing tool ever conceived.</p>
 
         <div className="home-actions">
           <button className="home-cta" onClick={() => setActiveTab('write')}>
-            Start writing
+            Begin composing
           </button>
           <div className="home-tutorial-wrap">
             <button className="home-cta home-cta-secondary home-cta-circle" onClick={() => start()}>
-              Tutorial
+              Masterclass
             </button>
-            <span className="home-recommended">Recommended</span>
+            <span className="home-recommended">Essential</span>
           </div>
         </div>
       </motion.div>

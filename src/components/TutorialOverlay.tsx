@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Loader2, Sparkles } from 'lucide-react'
+import { X, Loader2 } from 'lucide-react'
 import { useTutorial, INTEREST_FIELDS, type Placement } from '../lib/tutorial'
 import OdinHead from './OdinHead'
 
@@ -40,16 +40,16 @@ export default function TutorialOverlay() {
    INTRO: full-screen, blurred, glassy conversation
    ============================================================ */
 function IntroModal() {
-  const { field, suggestions, suggestionsLoading, chooseField, beginTour, stop } = useTutorial()
+  const { field, chooseField, beginTour, stop } = useTutorial()
   const [screen, setScreen] = useState<'greet' | 'field'>('greet')
   const [custom, setCustom] = useState('')
 
   const greeting =
-    "Hello there, I'm Odin. The most refined way in the world to research and write, built for those who expect nothing less than the very best."
-  const askField = 'Tell me, which field will you be putting me to work on?'
+    "Welcome. I'm Odin, the most refined writing studio ever built. Ready to get started?"
+  const askField = 'Which discipline shall we explore?'
 
   const line = screen === 'greet' ? greeting : askField
-  const { shown, done } = useTypewriter(line)
+  const { shown, done } = useTypewriter(line, 22)
 
   const submitCustom = () => {
     const v = custom.trim()
@@ -82,7 +82,7 @@ function IntroModal() {
           <OdinHead talking={!done} size={132} />
         </motion.div>
 
-        <p className="odin-intro-say">
+        <p className={`odin-intro-say${screen === 'field' ? ' is-compact' : ''}`}>
           {shown}
           {!done && <span className="odin-caret" />}
         </p>
@@ -114,12 +114,12 @@ function IntroModal() {
                   value={custom}
                   onChange={(e) => setCustom(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && submitCustom()}
-                  placeholder="Type a field or interest, then press Enter"
+                  placeholder="Your field or discipline (press Enter)"
                   className="odin-intro-bigfield-input"
                 />
               </div>
 
-              <span className="odin-intro-hint">or pick one</span>
+              <span className="odin-intro-hint">or select one</span>
 
               <div className="odin-carousel">
                 {INTEREST_FIELDS.map((f) => (
@@ -144,14 +144,8 @@ function IntroModal() {
                     animate={{ opacity: 1, height: 'auto' }}
                     exit={{ opacity: 0, height: 0 }}
                   >
-                    <p className="odin-intro-confirm-text">
-                      <Sparkles size={14} />
-                      {suggestionsLoading
-                        ? `Lining up some ${field} questions for you…`
-                        : `Perfect. I've prepared ${suggestions.length || 'a few'} ${field} questions to explore.`}
-                    </p>
                     <button className="odin-glass-btn primary" onClick={beginTour}>
-                      Start the tutorial
+                      Begin tutorial
                     </button>
                   </motion.div>
                 )}
@@ -159,10 +153,6 @@ function IntroModal() {
             </motion.div>
           )}
         </AnimatePresence>
-
-        <button className="odin-intro-skip" onClick={stop}>
-          Skip, I'll explore on my own
-        </button>
       </motion.div>
     </motion.div>
   )
@@ -271,9 +261,10 @@ function CoachTour() {
 
   const placement = step?.placement ?? 'bottom'
   const floatCoach = step?.floatCoach ?? false
+  const coachSide = step?.coachSide ?? 'bottom-left'
   const coach = useMemo(
-    () => computeCoach(floatCoach ? null : spot, placement, coachH),
-    [floatCoach, spot, placement, coachH],
+    () => computeCoach(floatCoach ? null : spot, placement, coachH, coachSide),
+    [floatCoach, spot, placement, coachH, coachSide],
   )
 
   if (!step) return null
@@ -336,7 +327,7 @@ function CoachTour() {
               {chipsBusy ? (
                 <span className="odin-coach-chips-loading">
                   <Loader2 size={12} className="animate-spin" />
-                  Tailoring questions to your field…
+                  Tailoring inquiries to your discipline…
                 </span>
               ) : (
                 chips.map((chip) => (
@@ -362,7 +353,7 @@ function CoachTour() {
                 exit={{ opacity: 0 }}
               >
                 <Loader2 size={12} className="animate-spin" />
-                {step.waitText ?? 'Waiting for you…'}
+                {step.waitText ?? 'Awaiting your action…'}
               </motion.div>
             )}
           </AnimatePresence>
@@ -388,7 +379,7 @@ function CoachTour() {
                     onClick={next}
                     disabled={!canAdvance && Boolean(step.advanceWhen) && !step.nextLabel}
                   >
-                    {isLast ? 'Finish' : step.nextLabel ?? 'Next'}
+                    {isLast ? 'Complete' : step.nextLabel ?? 'Continue'}
                   </button>
                 )}
               </div>
@@ -396,7 +387,7 @@ function CoachTour() {
 
             <div className="coach-meta-row">
               <button className="tour-skip" onClick={stop}>
-                Skip tour
+                Exit masterclass
               </button>
               {!isFirst && (
                 <button className="tour-link" onClick={prev}>
@@ -417,15 +408,23 @@ interface CoachPos {
 }
 
 /** Position the coach near the spotlight, clamped to the viewport. */
-function computeCoach(spot: Rect | null, placement: Placement, coachH = 300): CoachPos {
+function computeCoach(
+  spot: Rect | null,
+  placement: Placement,
+  coachH = 300,
+  coachSide: 'bottom-left' | 'left' = 'bottom-left',
+): CoachPos {
   const vw = window.innerWidth
   const vh = window.innerHeight
   const gap = 26
   const clampLeft = (l: number) => Math.max(16, Math.min(l, vw - COACH_WIDTH - 16))
   const clampTop = (t: number) => Math.max(16, Math.min(t, vh - coachH - 16))
 
-  // No target: float Odin in the bottom-left corner like a companion.
+  // No target: dock Odin out of the way so the workspace stays visible.
   if (!spot) {
+    if (coachSide === 'left') {
+      return { left: 28, top: clampTop(vh * 0.16) }
+    }
     return { left: 28, top: Math.max(16, vh - coachH - 24) }
   }
 

@@ -98,7 +98,7 @@ export default function DiffReview({ instruction, diff, onAccept, onReject }: Di
 
       <div>
 
-        <p className="text-xs font-medium text-black/55">Suggested edit</p>
+        <p className="text-xs font-medium text-black/55">Proposed revision</p>
 
         <p className="text-[11px] text-black/35 mt-0.5 line-clamp-2">"{instruction}"</p>
 
@@ -158,7 +158,7 @@ export default function DiffReview({ instruction, diff, onAccept, onReject }: Di
 
           <Check size={13} />
 
-          Accept
+          Approve
 
         </button>
 
@@ -174,7 +174,7 @@ export default function DiffReview({ instruction, diff, onAccept, onReject }: Di
 
           <X size={13} />
 
-          Reject
+          Decline
 
         </button>
 

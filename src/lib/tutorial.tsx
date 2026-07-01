@@ -23,6 +23,7 @@ import { useStore, hasUsableKey, type AppTab } from '../store/useStore'
 import { syncChat } from './claude'
 import {
   markOnboarded,
+  markOnboardingFinished,
   runOnboardingCommand,
   setOnboardingTopic,
   setOnboardingActive,
@@ -87,7 +88,7 @@ export async function generateResearchSuggestions(
       [
         {
           role: 'user',
-          content: `A curious professional is interested in "${field}". Suggest exactly 4 short, intriguing research questions (5–9 words each) they'd love to explore in this field. Make them specific and thought-provoking. Reply ONLY as a JSON array of 4 strings.`,
+          content: `A discerning author is exploring "${field}". Suggest exactly 4 short, provocative research questions (5–9 words each) worthy of serious inquiry. Make them precise and intellectually compelling. Reply ONLY as a JSON array of 4 strings.`,
         },
       ],
       'You suggest concise, curious research questions for a given field. Reply with only a JSON array of strings.',
@@ -138,7 +139,21 @@ export function computeSnapshot(): TourSnapshot {
 export function hasExistingWork(): boolean {
   const s = useStore.getState()
   const anyNodes = s.adventures.some((a) => (a.nodes ?? []).some((n) => n.data?.prompt))
-  return s.adventures.length > 1 || anyNodes || s.documents.length > 0
+  // Only treat documents with actual content/context as existing work
+  // so genuinely new users still get the tour.
+  const realDocs = s.documents.some((d) => {
+    const hasText = (d.tabs ?? []).some((t) => (t.content ?? '').trim().length > 0)
+    const ctx = d.context
+    const hasContext = Boolean(
+      ctx &&
+        (ctx.pdfs?.length ||
+          ctx.images?.length ||
+          ctx.conversations?.length ||
+          ctx.linkedAdventureIds?.length),
+    )
+    return hasText || hasContext
+  })
+  return s.adventures.length > 1 || anyNodes || realDocs
 }
 
 export interface TourStep {
@@ -149,10 +164,12 @@ export interface TourStep {
   target?: string
   placement?: Placement
   /**
-   * Keep the spotlight on the target, but float the coach in the bottom-left
-   * corner so it never covers the very thing it's pointing at.
+   * Keep the spotlight on the target, but float the coach so it never covers
+   * the thing it's pointing at. Use `coachSide` to pick the dock edge.
    */
   floatCoach?: boolean
+  /** Where to dock the coach when `floatCoach` is true. */
+  coachSide?: 'bottom-left' | 'left'
   /** Cap the spotlight height (px), useful for tall, full-height elements. */
   maxHeight?: number
   /** What Odin says on this step. */
@@ -190,7 +207,7 @@ const TOUR_STEPS: TourStep[] = [
     // Only shown to returning users who already have work; new users skip this.
     skipWhen: () => !hasExistingWork(),
     onEnter: () => runOnboardingCommand('zoomOutExploration'),
-    say: "Looks like you've already got some work here. Let's keep it tidy. I'll start a fresh adventure just for this walkthrough so nothing you've made gets touched.",
+    say: "You already have work in progress, admirable. I'll open a pristine adventure canvas for this masterclass, leaving everything you've crafted untouched.",
     cta: {
       label: 'New adventure',
       run: () => runOnboardingCommand('newAdventure'),
@@ -202,7 +219,7 @@ const TOUR_STEPS: TourStep[] = [
     target: '[data-tour="exploration-prompt"]',
     placement: 'top',
     onEnter: () => runOnboardingCommand('zoomOutExploration'),
-    say: "Let's begin with a spark of curiosity. Type a question you'd genuinely love to research, or tap one I've tailored to your field.",
+    say: "Every great work begins with a question worth pursuing. Pose one that genuinely compels you, or select from those I've curated for your discipline.",
     chipsSource: 'suggestions',
     onChip: (value) => {
       runOnboardingCommand('askResearchQuestion', value)
@@ -210,45 +227,45 @@ const TOUR_STEPS: TourStep[] = [
     advanceWhen: (entry, live) => live.nodes > entry.nodes,
     autoAdvance: true,
     hideNext: true,
-    waitText: 'Ask a question to begin…',
+    waitText: 'Pose your question to begin…',
   },
   {
     id: 'research-wait',
     tab: 'exploration',
-    say: "Beautiful question. Let's give that block a moment to finish writing. I'll wait right here, then we'll keep going.",
+    say: "An excellent question. Allow the response to reach its full depth. I'll remain here until it's complete.",
     // Only move on once nothing is still generating.
     advanceWhen: (_entry, live) => live.loadingNodes === 0,
     autoAdvance: true,
     hideNext: true,
-    waitText: 'Letting the block finish…',
+    waitText: 'Awaiting the full response…',
   },
   {
     id: 'explore-links',
     tab: 'exploration',
-    say: 'See the underlined links in that block? Each one is a real source. Click one, then open it or embed the whole page right onto your canvas. Try it.',
-    cta: { label: 'Got it' },
+    say: 'Every citation is a gateway to primary source. Select an underlined reference, then open or embed the full page directly onto your canvas.',
+    cta: { label: 'Understood' },
   },
   {
     id: 'explore-highlight',
     tab: 'exploration',
-    say: 'Now highlight any sentence inside a block. Odin suggests questions and branches a new sub-block to dig deeper into exactly that idea.',
+    say: 'Highlight any passage that demands deeper examination. Odin will propose follow-up questions and branch a new block from precisely that idea.',
     advanceWhen: (entry, live) => live.edges > entry.edges || live.nodes > entry.nodes,
     autoAdvance: true,
     hideNext: true,
-    waitText: 'Highlight a sentence to branch a sub-block…',
+    waitText: 'Highlight a passage to branch deeper…',
   },
   {
     id: 'explore-images',
     tab: 'exploration',
-    say: "You can think visually too. Watch closely: I'll ask for an image of your topic and draw it as its own block.",
+    say: "Research need not be purely textual. Observe, and I'll commission a visual representation of your subject as its own block.",
     cta: {
-      label: 'Show image',
+      label: 'Generate visual',
       run: () => runOnboardingCommand('generateImage'),
       advance: false,
     },
     advanceWhen: (entry, live) => live.visuals > entry.visuals,
     autoAdvance: true,
-    waitText: 'Drawing your image…',
+    waitText: 'Rendering your visual…',
     nextLabel: 'Skip',
   },
   {
@@ -256,15 +273,15 @@ const TOUR_STEPS: TourStep[] = [
     tab: 'exploration',
     target: '[data-tour="sources"]',
     placement: 'left',
-    say: "Every answer is grounded in real research. This tab on the right opens your Sources panel so you can read and cite what's behind each block.",
-    cta: { label: 'Makes sense' },
+    say: "Every answer rests on verified research. This panel reveals the sources behind each block. Read, verify, and cite with confidence.",
+    cta: { label: 'Understood' },
   },
   {
     id: 'explore-continue',
     tab: 'exploration',
-    say: "Keep exploring as long as you like: branch, ask, embed. When you're ready, let's turn this into actual writing.",
+    say: "Continue your adventure as long as inspiration demands: branch, embed, dig deeper. When you're ready, we'll transform this into prose.",
     cta: {
-      label: "Let's write",
+      label: 'Begin composing',
       run: () => {
         useStore.getState().setActiveTab('write')
         runOnboardingCommand('openDocLibrary')
@@ -277,11 +294,11 @@ const TOUR_STEPS: TourStep[] = [
     target: '[data-tour="doclibrary"]',
     placement: 'right',
     onEnter: () => runOnboardingCommand('openDocLibrary'),
-    say: 'This is your document library, where every writing project lives. Create a new document to start writing.',
+    say: 'Your document library holds every work you\'ve ever composed, impeccably preserved. Create a new document to begin.',
     advanceWhen: (entry, live) => live.docs > entry.docs,
     autoAdvance: true,
     hideNext: true,
-    waitText: 'Click “New document” to continue…',
+    waitText: 'Create a new document to continue…',
   },
   {
     id: 'write-context',
@@ -290,10 +307,10 @@ const TOUR_STEPS: TourStep[] = [
     placement: 'right',
     floatCoach: true,
     onEnter: () => runOnboardingCommand('openContextHouse'),
-    say: 'First, give Odin some context. In the Adventures slot, add the adventure you just explored. Odin even names it for you by topic. Then hit Next.',
+    say: 'Before you write a single word, furnish The Context House. Link the adventure you just completed, and Odin will name it by subject. Then continue.',
     advanceWhen: (entry, live) => live.linkedAdv > entry.linkedAdv,
-    waitText: 'Add your adventure, then press Next…',
-    nextLabel: 'Next',
+    waitText: 'Link your adventure, then continue…',
+    nextLabel: 'Continue',
   },
   {
     id: 'write-summary',
@@ -303,29 +320,29 @@ const TOUR_STEPS: TourStep[] = [
     onEnter: () => {
       runOnboardingCommand('closeWritePanels')
     },
-    say: "Here's the magic: I can turn everything in your Context House into a first draft. Want me to write a summary to get you started?",
+    say: "This is where research becomes prose. I can synthesize everything in The Context House into an opening draft. Shall I compose a summary to begin?",
     cta: {
-      label: 'Summarize',
+      label: 'Compose summary',
       run: () => runOnboardingCommand('writeContextSummary'),
       advance: false,
     },
-    nextLabel: 'Next',
+    nextLabel: 'Continue',
   },
   {
     id: 'write-feedback',
     tab: 'write',
     target: '[data-tour="assistant"]',
     placement: 'left',
-    say: "Don't like a sentence? Highlight it, add it to chat, and tell me what's off. Phrase it like a rule, say “make this less formal”, and I'll remember your voice.",
-    cta: { label: 'Open Style', run: () => useStore.getState().setActiveTab('stylism') },
+    say: "When a sentence falls short of your standard, highlight it and tell me precisely what's wrong. Phrase it as a principle ('make this less formal') and I'll engrave it into your Voice.",
+    cta: { label: 'Open Voice', run: () => useStore.getState().setActiveTab('stylism') },
   },
   {
     id: 'style-finish',
     tab: 'stylism',
-    target: '[data-tour="main"]',
-    placement: 'center',
-    say: "This is your Style network. Every bit of feedback becomes a rule that wires into the others, so Odin writes more like you over time. That's the whole loop: explore, write, refine. You're all set!",
-    nextLabel: 'Finish',
+    floatCoach: true,
+    coachSide: 'left',
+    say: "This is your Voice, a living network of principles learned from every correction you make. Over time, Odin writes indistinguishably from you. Research. Compose. Refine. You are ready.",
+    nextLabel: 'Complete',
   },
 ]
 
@@ -403,6 +420,7 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
 
   const stop = useCallback(() => {
     markOnboarded()
+    markOnboardingFinished()
     setOnboardingActive(false)
     setActive(false)
     setCanAdvance(false)
@@ -436,6 +454,7 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
       const n = nextVisibleIndex(i + 1, 1)
       if (n >= TOUR_STEPS.length) {
         markOnboarded()
+        markOnboardingFinished()
         setOnboardingActive(false)
         setActive(false)
         setCanAdvance(false)

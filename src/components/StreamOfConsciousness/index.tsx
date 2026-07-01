@@ -154,8 +154,8 @@ export default function StreamOfConsciousness() {
       <div className="mx-auto max-w-4xl">
         <div className="mb-6 flex items-end justify-between">
           <div>
-            <h1 className="font-caveat text-3xl font-bold text-white">Stream of Consciousness</h1>
-            <p className="mt-1 text-sm text-white/40">Speak or type freely — Claude listens and asks deeper questions</p>
+            <h1 className="font-display text-3xl font-bold text-white tracking-tight">The Journal</h1>
+            <p className="mt-1 text-sm text-white/40">Unfiltered thought — Odin listens and probes deeper</p>
           </div>
           <button onClick={() => setActiveTab('write')} className="btn-primary flex items-center gap-2">
             <PenTool size={14} />
@@ -236,7 +236,7 @@ export default function StreamOfConsciousness() {
                     setTextInput(e.target.value)
                     scheduleQuestionGeneration(e.target.value)
                   }}
-                  placeholder="Write anything freely... don't filter, just flow. What are you thinking about?"
+                  placeholder="Write without filter. What demands your attention?"
                   className="h-48 w-full resize-none rounded-xl border border-white/10 bg-white/5 p-4 
                              font-writing text-base text-white/80 placeholder-white/20 outline-none 
                              transition-all focus:border-accent-gold/40"
@@ -324,7 +324,7 @@ export default function StreamOfConsciousness() {
         {/* Past sessions */}
         {sessions.length > 0 && (
           <div className="mt-6">
-            <h3 className="font-caveat text-xl text-white/60 mb-3">Past Sessions</h3>
+            <h3 className="font-display text-xl text-white/60 mb-3 tracking-tight">Previous Sessions</h3>
             <div className="space-y-2">
               {sessions.slice(0, 5).map((sess) => (
                 <div key={sess.id} className="card-hover p-4 flex items-start gap-4">

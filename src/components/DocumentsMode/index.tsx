@@ -73,8 +73,8 @@ export default function DocumentsMode({ onClose }: { onClose?: () => void }) {
       <div className="flex-shrink-0 px-6 pt-6 pb-4">
         <div className="mx-auto max-w-5xl flex items-end justify-between gap-4">
           <div>
-            <h1 className="font-caveat text-3xl font-bold text-white">Documents</h1>
-            <p className="mt-1 text-sm text-white/40">All your writing projects in one place</p>
+            <h1 className="font-display text-3xl font-bold text-white tracking-tight">Documents</h1>
+            <p className="mt-1 text-sm text-white/40">Every work, impeccably preserved</p>
           </div>
           <div className="flex items-center gap-2">
           <button type="button" onClick={handleNew} className="doc-library-new-btn">
@@ -110,7 +110,7 @@ export default function DocumentsMode({ onClose }: { onClose?: () => void }) {
               <p>No documents yet</p>
               <button type="button" onClick={handleNew} className="doc-library-new-btn">
                 <Plus size={14} />
-                Create your first document
+                Compose your first document
               </button>
             </div>
           ) : (
@@ -154,8 +154,7 @@ export default function DocumentsMode({ onClose }: { onClose?: () => void }) {
                               year: 'numeric',
                             })}
                           </span>
-                          {documents.length > 1 && (
-                            <button
+                          <button
                               type="button"
                               className="doc-library-delete"
                               title="Delete document"
@@ -163,7 +162,6 @@ export default function DocumentsMode({ onClose }: { onClose?: () => void }) {
                             >
                               <Trash2 size={12} />
                             </button>
-                          )}
                         </div>
                       </div>
                     </div>

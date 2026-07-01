@@ -22,6 +22,14 @@ import type { Session, User } from '@supabase/supabase-js'
 import { supabase, isAuthConfigured, setCachedAccessToken } from './supabase'
 import { useStore } from '../store/useStore'
 import { setWorkspaceUser } from './workspaceStorage'
+import {
+  clearSignupCompleteLandingUrl,
+  isSignupCompleteLanding,
+  oauthSignInUrl,
+  oauthSignupCompleteUrl,
+  trackSignupConversion,
+} from './oauthRedirect'
+import { notifySignupComplete } from './signupNotify'
 
 interface AuthState {
   /** Whether Google auth is configured (and therefore a login is required). */
@@ -30,7 +38,7 @@ interface AuthState {
   ready: boolean
   user: User | null
   session: Session | null
-  signInWithGoogle: () => Promise<void>
+  signInWithGoogle: (options?: { afterSignup?: boolean }) => Promise<void>
   signOut: () => Promise<void>
 }
 
@@ -78,11 +86,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => sub.subscription.unsubscribe()
   }, [])
 
-  async function signInWithGoogle() {
+  async function signInWithGoogle(options?: { afterSignup?: boolean }) {
     if (!supabase) return
+    // New sign-ups land on /signup-complete so Google Ads can count conversions on
+    // a stable URL. Returning sign-ins go back to "/".
+    const redirectTo = options?.afterSignup
+      ? oauthSignupCompleteUrl()
+      : oauthSignInUrl()
     await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: window.location.origin },
+      options: { redirectTo },
     })
   }
 
@@ -113,4 +126,20 @@ export function useAuth(): AuthState {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error('useAuth must be used within an AuthProvider')
   return ctx
+}
+
+/** After Google OAuth, normalize the signup-complete URL and track conversions. */
+export function SignupCompleteHandler() {
+  const { ready, user } = useAuth()
+
+  useEffect(() => {
+    if (!ready || !isSignupCompleteLanding()) return
+    if (user) {
+      trackSignupConversion(user)
+      void notifySignupComplete(user)
+    }
+    clearSignupCompleteLandingUrl()
+  }, [ready, user])
+
+  return null
 }

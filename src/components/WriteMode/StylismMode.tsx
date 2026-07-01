@@ -14,11 +14,12 @@
  * signal particles) are applied imperatively inside the simulation loop.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Plus, RotateCcw, Trash2, Zap } from 'lucide-react'
-import { useStore } from '../../store/useStore'
+import { X, Plus, Trash2, Zap, Upload } from 'lucide-react'
+import { useStore, useHasApiKey } from '../../store/useStore'
 import { computeStyleEdges, type StyleEdge } from '../../lib/style'
+import VoiceImportModal from './VoiceImportModal'
 
 interface SimNode {
   id: string
@@ -47,6 +48,8 @@ interface ViewTransform {
 
 const MIN_ZOOM = 0.35
 const MAX_ZOOM = 2.5
+/** Default framing — slightly zoomed out so the whole network is visible. */
+const DEFAULT_ZOOM = 0.55
 
 /* Moneta-style proportional sizing: log scale + sigmoid, bounded. */
 function nodeRadius(weight: number, allWeights: number[]): number {
@@ -66,12 +69,17 @@ export default function StylismMode() {
   const styleRules = useStore((s) => s.styleRules)
   const styleConnections = useStore((s) => s.styleConnections)
   const lastStyleActivation = useStore((s) => s.lastStyleActivation)
+  const apiKey = useStore((s) => s.apiKey)
+  const hasApiKey = useHasApiKey()
   const {
-    addStyleRule, editStyleRule, deleteStyleRule,
-    setStyleRulePosition, resetStyleRules, clearStyleActivation,
+    addStyleRule, editStyleRule, deleteStyleRule, importStyleRules,
+    setStyleRulePosition, clearStyleActivation,
   } = useStore()
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
+
+  const viewInitializedRef = useRef(false)
 
   const canvasRef = useRef<HTMLDivElement>(null)
   const worldRef = useRef<HTMLDivElement>(null)
@@ -79,9 +87,38 @@ export default function StylismMode() {
   const edgeEls = useRef(new Map<string, SVGLineElement>())
   const sim = useRef(new Map<string, SimNode>())
   const signals = useRef<Signal[]>([])
-  const view = useRef<ViewTransform>({ x: 0, y: 0, k: 1 })
+  const view = useRef<ViewTransform>({ x: 0, y: 0, k: DEFAULT_ZOOM })
   const rafId = useRef(0)
   const consumedActivationAt = useRef(0)
+
+  const centerViewOnNetwork = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const nodes = [...sim.current.values()]
+    const W = canvas.clientWidth
+    const H = canvas.clientHeight
+    if (nodes.length === 0) {
+      view.current = { x: W * 0.5, y: H * 0.5, k: DEFAULT_ZOOM }
+      return
+    }
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const n of nodes) {
+      minX = Math.min(minX, n.x - n.r)
+      minY = Math.min(minY, n.y - n.r)
+      maxX = Math.max(maxX, n.x + n.r)
+      maxY = Math.max(maxY, n.y + n.r)
+    }
+    const cx = (minX + maxX) / 2
+    const cy = (minY + maxY) / 2
+    view.current = {
+      x: W / 2 - cx * DEFAULT_ZOOM,
+      y: H / 2 - cy * DEFAULT_ZOOM,
+      k: DEFAULT_ZOOM,
+    }
+  }, [])
 
   const edges: StyleEdge[] = useMemo(
     () => computeStyleEdges(styleRules, styleConnections),
@@ -122,9 +159,9 @@ export default function StylismMode() {
         existing.targetR = targetR
         return
       }
-      // Seed: persisted position, else a loose ring with jitter.
+      // Seed: persisted position, else a tighter ring with jitter.
       const angle = (i / Math.max(1, styleRules.length)) * Math.PI * 2
-      const ringR = Math.min(W, H) * 0.3
+      const ringR = Math.min(W, H) * 0.22
       sim.current.set(rule.id, {
         id: rule.id,
         x: rule.x ?? W / 2 + Math.cos(angle) * ringR + (Math.random() - 0.5) * 60,
@@ -137,6 +174,16 @@ export default function StylismMode() {
       })
     })
   }, [styleRules])
+
+  /* ── Default zoomed-out framing on first load ── */
+  useEffect(() => {
+    if (viewInitializedRef.current || styleRules.length === 0) return
+    const t = window.setTimeout(() => {
+      centerViewOnNetwork()
+      viewInitializedRef.current = true
+    }, 120)
+    return () => window.clearTimeout(t)
+  }, [styleRules.length, centerViewOnNetwork])
 
   /* ── Force simulation + render loop ── */
   useEffect(() => {
@@ -166,10 +213,10 @@ export default function StylismMode() {
             d2 = dx * dx + dy * dy
           }
           const d = Math.sqrt(d2)
-          const minGap = a.r + b.r + 18
-          // Soft long-range repulsion plus a firmer collision push.
-          let f = 18500 / d2
-          if (d < minGap) f += (minGap - d) * 0.35
+          const minGap = a.r + b.r + 10
+          // Softer long-range repulsion for a tighter cluster.
+          let f = 12000 / d2
+          if (d < minGap) f += (minGap - d) * 0.42
           f = Math.min(f, 6)
           const fx = (dx / d) * f
           const fy = (dy / d) * f
@@ -186,8 +233,8 @@ export default function StylismMode() {
         const dx = b.x - a.x
         const dy = b.y - a.y
         const d = Math.max(1, Math.sqrt(dx * dx + dy * dy))
-        const rest = a.r + b.r + 150 - e.strength * 80
-        const f = (d - rest) * 0.0035 * (0.4 + e.strength)
+        const rest = a.r + b.r + 92 - e.strength * 55
+        const f = (d - rest) * 0.004 * (0.45 + e.strength)
         const fx = (dx / d) * f
         const fy = (dy / d) * f
         if (!a.pinned) { a.vx += fx; a.vy += fy }
@@ -197,8 +244,8 @@ export default function StylismMode() {
       // Centering + integration (world is unbounded; pan/zoom handles framing)
       for (const n of nodes) {
         if (!n.pinned) {
-          n.vx += (W / 2 - n.x) * 0.0012
-          n.vy += (H / 2 - n.y) * 0.0012
+          n.vx += (W / 2 - n.x) * 0.0016
+          n.vy += (H / 2 - n.y) * 0.0016
           n.vx *= 0.85
           n.vy *= 0.85
           n.x += n.vx
@@ -399,7 +446,7 @@ export default function StylismMode() {
 
   const handleAdd = () => {
     const id = addStyleRule({
-      label: 'New rule',
+      label: 'New principle',
       instruction: '',
       source: 'user',
     })
@@ -464,18 +511,21 @@ export default function StylismMode() {
         </div>
 
         <p className="stylism-hint">
-          Drag the canvas to pan · scroll to zoom · drag neurons to arrange · click one to edit ·
-          stylistic feedback in Write mode grows the network
+          Pan to navigate · scroll to zoom · drag nodes to arrange · click to edit or delete
         </p>
 
         <div className="stylism-fabs">
-          <button className="btn-ghost text-xs flex items-center gap-1.5" onClick={resetStyleRules}>
-            <RotateCcw size={12} />
-            Reset
+          <button
+            type="button"
+            className="btn-ghost text-xs flex items-center gap-1.5"
+            onClick={() => setImportOpen(true)}
+          >
+            <Upload size={12} />
+            Import writing
           </button>
           <button className="btn-ghost text-xs flex items-center gap-1.5" onClick={handleAdd}>
             <Plus size={12} />
-            Add rule
+            Add principle
           </button>
         </div>
       </div>
@@ -502,7 +552,7 @@ export default function StylismMode() {
                 className="stylism-label"
                 value={selected.label}
                 onChange={(e) => editStyleRule(selected.id, { label: e.target.value })}
-                placeholder="Rule name"
+                placeholder="Principle name"
               />
               <button
                 className="stylism-delete"
@@ -523,8 +573,8 @@ export default function StylismMode() {
               className="stylism-instruction"
               value={selected.instruction}
               onChange={(e) => editStyleRule(selected.id, { instruction: e.target.value })}
-              placeholder="Describe what the AI should (or shouldn't) do…"
-              rows={5}
+              placeholder="Describe what Odin should honor — or refuse — in your prose. Longer, specific rules are fine."
+              rows={8}
             />
             <div className="stylism-panel-stats">
               <span>weight {selected.weight.toFixed(2)}</span>
@@ -534,12 +584,24 @@ export default function StylismMode() {
                   ? 'learned from feedback'
                   : selected.source === 'user'
                   ? 'added by you'
-                  : 'house default'}
+                  : 'context house default'}
               </span>
             </div>
           </motion.aside>
         )}
       </AnimatePresence>
+
+      <VoiceImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        apiKey={apiKey}
+        hasApiKey={hasApiKey}
+        styleRules={styleRules}
+        onImport={importStyleRules}
+        onComplete={() => {
+          window.setTimeout(() => centerViewOnNetwork(), 200)
+        }}
+      />
     </div>
   )
 }

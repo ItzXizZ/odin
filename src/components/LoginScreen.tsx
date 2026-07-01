@@ -46,7 +46,7 @@ export default function LoginScreen() {
             letterSpacing: '-0.02em',
           }}
         >
-          Welcome to Odin
+          Odin
         </h1>
         <p
           style={{
@@ -56,8 +56,8 @@ export default function LoginScreen() {
             color: 'rgba(60,60,60,0.7)',
           }}
         >
-          Sign in to access your writing studio. Your documents, explorations, and
-          style live securely in your account.
+          Sign in to your private studio. Your documents, research, and voice profile
+          are preserved with absolute discretion.
         </p>
 
         <button
@@ -88,11 +88,11 @@ export default function LoginScreen() {
           onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
         >
           <GoogleMark />
-          {busy ? 'Redirecting…' : 'Continue with Google'}
+          {busy ? 'Entering studio…' : 'Sign in with Google'}
         </button>
 
         <p style={{ marginTop: 18, fontSize: 12, color: 'rgba(60,60,60,0.5)' }}>
-          We only use your Google account to identify you. Nothing is posted on your behalf.
+          Authentication only. Your work remains entirely private.
         </p>
 
         <p style={{ marginTop: 12, fontSize: 12, color: 'rgba(60,60,60,0.45)' }}>

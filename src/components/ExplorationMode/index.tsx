@@ -678,7 +678,7 @@ export default function ExplorationMode() {
     const advId = s.activeAdventureId
     const adv = s.adventures.find((a) => a.id === advId)
     if (!adv || !advId) return
-    if (!/^adventure\s*\d+$/i.test(adv.name.trim())) return // already custom-named
+    if (!/^(adventure|inquiry)\s*\d+$/i.test(adv.name.trim())) return // already custom-named
     const answered = adv.nodes.filter((n) => n.data.response)
     if (answered.length === 0) return
     labelingRef.current = true
@@ -706,7 +706,7 @@ export default function ExplorationMode() {
         .trim()
       // Re-check the name didn't change underneath us before committing.
       const current = useStore.getState().adventures.find((a) => a.id === advId)
-      if (clean && current && /^adventure\s*\d+$/i.test(current.name.trim())) {
+      if (clean && current && /^(adventure|inquiry)\s*\d+$/i.test(current.name.trim())) {
         useStore.getState().renameAdventure(advId, clean)
       }
     } finally {
@@ -1870,7 +1870,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
               {suggestionsLoading ? (
                 <span className="exp-suggest-loading">
                   <Loader2 size={12} className="animate-spin" />
-                  Odin is thinking of questions…
+                  Odin is curating questions…
                 </span>
               ) : (
                 <div className="exp-suggest-scroll" role="listbox" aria-label="Suggested questions">
@@ -1896,12 +1896,12 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
               onChange={(e) => setPrompt(e.target.value)}
               placeholder={
                 pendingExcerpt
-                  ? 'Ask about the highlight...'
+                  ? 'Inquire about the highlighted passage…'
                   : selectedNodeId
-                  ? 'Reply to this message...'
-                  : 'Ask a question to explore...'
+                  ? 'Continue this thread…'
+                  : 'Pose your question…'
               }
-              className="flex-1 bg-transparent px-3 py-2 text-sm text-white/80 outline-none placeholder-white/25 font-caveat text-base"
+              className="flex-1 bg-transparent px-3 py-2 text-sm text-white/80 outline-none placeholder-white/25 font-display text-base"
             />
             {(selectedNodeId || pendingExcerpt) && (
               <button
@@ -1910,7 +1910,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
                   setSelectedNodeId(null)
                   setPendingExcerpt(null)
                 }}
-                className="text-xs text-white/30 hover:text-white/50 px-2 font-caveat"
+                className="text-xs text-white/30 hover:text-white/50 px-2"
               >
                 clear
               </button>
@@ -1921,14 +1921,14 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
               className="btn-primary flex items-center gap-2 text-sm py-2 disabled:opacity-40"
             >
               <Plus size={14} />
-              Explore
+              Inquire
             </button>
           </form>
           {(selectedNodeId || pendingExcerpt) && (
-            <p className="mt-1 text-center text-xs text-white/50 font-caveat">
+            <p className="mt-1 text-center text-xs text-white/50">
               {pendingExcerpt
-                ? 'Branches a new block from your highlight'
-                : 'Adds a connected block below this message'}
+                ? 'Branches a new block from your selection'
+                : 'Extends this thread with a connected block'}
             </p>
           )}
         </div>
@@ -1936,10 +1936,10 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         {nodes.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center">
-              <p className="font-caveat text-2xl text-black/50">Start exploring ideas</p>
-              <p className="mt-2 text-sm text-black/35">Type a question below to create your first node</p>
-              <p className="mt-1 text-sm text-black/35">Use + below a block to reply, or highlight text to branch from it</p>
-              <p className="mt-1 text-sm text-black/35">Ask for an image, diagram, or illustration to get a visual block</p>
+              <p className="font-display text-2xl text-black/50 tracking-tight">Begin your adventure</p>
+              <p className="mt-2 text-sm text-black/35">Pose a question below to open your first block</p>
+              <p className="mt-1 text-sm text-black/35">Highlight any passage to branch deeper, or reply to extend a thread</p>
+              <p className="mt-1 text-sm text-black/35">Request a visual, diagram, or illustration for a dedicated block</p>
             </div>
           </div>
         )}

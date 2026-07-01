@@ -726,6 +726,9 @@ if (isProduction) {
   app.get('/terms', (_req, res) => {
     res.sendFile(path.join(distPath, 'terms/index.html'))
   })
+  app.get('/signup-complete', (_req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'))
+  })
   app.use(express.static(distPath))
   app.get('*', (_req, res) => {
     res.sendFile(path.join(distPath, 'index.html'))

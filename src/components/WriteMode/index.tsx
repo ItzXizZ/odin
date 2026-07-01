@@ -87,7 +87,7 @@ interface ChatEntry extends WriteChatMessage {}
 
 function buildEditFallbackMessage(edits: ParsedEdit[]): string {
   if (edits.length === 0) {
-    return "I looked it over and didn't find anything worth changing — your wording already holds up."
+    return "Your prose already meets a high standard — I found nothing that demands revision."
   }
   const describe = (e: ParsedEdit) => {
     if (!e.find && e.replace) return `added "${e.replace.slice(0, 48)}${e.replace.length > 48 ? '…' : ''}"`
@@ -96,7 +96,7 @@ function buildEditFallbackMessage(edits: ParsedEdit[]): string {
   }
   const preview = edits.slice(0, 2).map(describe).join('; ')
   const tail = edits.length > 2 ? ` — plus ${edits.length - 2} more tweak${edits.length - 2 === 1 ? '' : 's'}.` : '.'
-  return `I made ${edits.length} edit${edits.length === 1 ? '' : 's'}: ${preview}${tail} You can accept or reject each one inline.`
+  return `I've proposed ${edits.length} revision${edits.length === 1 ? '' : 's'}: ${preview}${tail} Approve or decline each one at your discretion.`
 }
 
 /** Re-apply the yellow attachment highlight for a passage thread. */
@@ -324,6 +324,14 @@ export default function WriteMode() {
 
   useEffect(() => {
     if (!hydrated) return
+    if (documents.length > 0) return
+    setShowContextHouse(false)
+    setAssistantOpen(false)
+    setShowDocLibrary(true)
+  }, [hydrated, documents.length])
+
+  useEffect(() => {
+    if (!hydrated) return
     const tab = useStore.getState().getActiveTab()
     if (tab && !tab.chatThreads?.length) {
       const docThread = createChatThread([])
@@ -371,7 +379,7 @@ export default function WriteMode() {
         }),
         Placeholder.configure({
           placeholder:
-            'Begin writing… Your ideas from Context House, Stream, and Exploration are available to Claude.',
+            'Begin composing… Everything in The Context House, your research, and your journal informs every word.',
         }),
       ],
       content: useStore.getState().getActiveTab()?.content ?? '',
@@ -698,7 +706,7 @@ export default function WriteMode() {
         } else if (result.text) {
           postStyleMessage(result.text)
         } else if (summary.length > 0) {
-          postStyleMessage(`Style network updated: ${summary.join(' · ')}.`)
+          postStyleMessage(`Voice updated: ${summary.join(' · ')}.`)
         }
       } catch {
         // Network upkeep must never interrupt the writing flow.
@@ -952,7 +960,7 @@ INSTRUCTION: ${instruction}`
       // Give the editor a beat to remount/clear before the empty-doc draft path.
       setTimeout(() => {
         void handleAIAssistRef.current(
-          'Write a clear, well-structured summary of the materials in my Context House to start this document.'
+          'Compose an opening summary from the materials in The Context House to begin this document.'
         )
       }, 250)
     })
@@ -1154,13 +1162,13 @@ INSTRUCTION: ${instruction}`
                     {saveStatus === 'saving' && (
                       <>
                         <Loader2 size={12} className="animate-spin" />
-                        Saving…
+                        Preserving…
                       </>
                     )}
                     {saveStatus === 'saved' && (
                       <>
                         <Check size={12} />
-                        Saved
+                        Preserved
                       </>
                     )}
                     {saveStatus === 'error' && 'Save failed'}
@@ -1171,7 +1179,7 @@ INSTRUCTION: ${instruction}`
               <button
                 onClick={() => { setShowContextHouse(true); setAssistantOpen(false) }}
                 className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70"
-                title="Context House — research materials for this document"
+                title="The Context House — context the AI uses for this document"
                 data-tour="context"
               >
                 <Inbox size={15} />
@@ -1179,7 +1187,7 @@ INSTRUCTION: ${instruction}`
               <button
                 onClick={() => { setAssistantOpen((v) => !v); setShowContextHouse(false) }}
                 className="rounded-lg p-1.5 text-black/40 transition hover:bg-black/5 hover:text-black/70"
-                title={assistantOpen ? 'Hide assistant' : 'Show assistant'}
+                title={assistantOpen ? 'Hide editor' : 'Show editor'}
                 data-tour="assistant-toggle"
               >
                 {assistantOpen ? <PanelRightClose size={15} /> : <PanelRightOpen size={15} />}
@@ -1249,7 +1257,7 @@ INSTRUCTION: ${instruction}`
                 onClick={() => openTunnel(selectionMenu.from, selectionMenu.to, selectionMenu.text)}
               >
                 <Crosshair size={13} />
-                Focus
+                Refine
               </button>
               <span className="selection-toolbar-sep" />
               <button
@@ -1259,7 +1267,7 @@ INSTRUCTION: ${instruction}`
                   setSelectionMenu(null)
                 }}
               >
-                Add to chat
+                Add to editor
               </button>
             </motion.div>
           )}
@@ -1394,7 +1402,7 @@ INSTRUCTION: ${instruction}`
                           }`}
                         >
                           {entry.kind === 'style' && (
-                            <p className="mb-1 text-[10px] font-semibold text-violet-700/70">Stylism</p>
+                            <p className="mb-1 text-[10px] font-semibold text-violet-700/70">Voice</p>
                           )}
                           <p><InlineMd text={entry.content} /></p>
                           {entry.role === 'assistant' && suggestion?.accepted === true && (
@@ -1418,7 +1426,7 @@ INSTRUCTION: ${instruction}`
                     <div className="chat-bubble chat-bubble-ai">
                       <div className="flex items-center gap-2 text-black/40">
                         <Loader2 size={12} className="animate-spin" />
-                        Composing precise edits…
+                        Refining with precision…
                       </div>
                     </div>
                   </div>
@@ -1436,7 +1444,7 @@ INSTRUCTION: ${instruction}`
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handlePromptDrop}
               >
-                {dragOver && <div className="prompt-drop-hint">Drop to attach passage</div>}
+                {dragOver && <div className="prompt-drop-hint">Release to attach passage</div>}
 
                 <div className="assistant-input-bar">
                   <textarea
@@ -1455,8 +1463,8 @@ INSTRUCTION: ${instruction}`
                     rows={1}
                     placeholder={
                       attachedSelection
-                        ? 'How should this passage change?'
-                        : 'Ask for edits or chat with the assistant…'
+                        ? 'How should this passage be refined?'
+                        : 'Request revisions or converse with your editor…'
                     }
                     className="assistant-textarea"
                     disabled={isStreaming}
@@ -1499,11 +1507,11 @@ INSTRUCTION: ${instruction}`
             </span>
             <button type="button" className="review-float-btn review-float-accept" onClick={acceptAll}>
               <Check size={14} />
-              Accept all
+              Approve all
             </button>
             <button type="button" className="review-float-btn review-float-reject" onClick={rejectAll}>
               <X size={14} />
-              Reject all
+              Decline all
             </button>
             <span className="review-float-hint">Ctrl+Enter</span>
           </motion.div>

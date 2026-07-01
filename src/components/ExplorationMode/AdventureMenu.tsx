@@ -75,14 +75,14 @@ export default function AdventureMenu({ onBeforeSwitch, onCreateAdventure }: Adv
         title="Switch adventure"
       >
         <Map size={12} />
-        <span className="truncate font-medium">{activeAdventure?.name ?? 'Adventures'}</span>
+        <span className="truncate font-medium">{activeAdventure?.name ?? 'Inquiries'}</span>
         <ChevronDown size={12} className={`flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
         <div className="absolute left-0 top-full mt-2 w-72 overflow-hidden rounded-xl border border-black/10 bg-white shadow-xl">
           <div className="flex items-center justify-between border-b border-black/8 px-3 py-2">
-            <span className="text-xs font-semibold text-black/55">Adventures</span>
+            <span className="text-xs font-semibold text-black/55">Inquiries</span>
             <button
               type="button"
               onClick={handleNew}
