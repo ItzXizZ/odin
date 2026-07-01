@@ -1901,7 +1901,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
                   ? 'Continue this thread…'
                   : 'Pose your question…'
               }
-              className="flex-1 bg-transparent px-3 py-2 text-sm text-white/80 outline-none placeholder-white/25 font-display text-base"
+              className="flex-1 bg-transparent px-3 py-2 text-sm text-white/80 outline-none placeholder-white/25 font-sans text-base"
             />
             {(selectedNodeId || pendingExcerpt) && (
               <button

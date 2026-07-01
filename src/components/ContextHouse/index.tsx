@@ -171,7 +171,7 @@ function AdventurePreview({ adv }: { adv: Adventure }) {
               y={cy + cardH * 0.42}
               fontSize={fontSize}
               fill="rgba(30,30,30,0.82)"
-              fontFamily="Inter, sans-serif"
+              fontFamily="Arial, Helvetica, sans-serif"
               fontWeight="500"
             >
               {label}

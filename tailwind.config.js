@@ -4,11 +4,11 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        display: ['Instrument Serif', 'Georgia', 'Times New Roman', 'serif'],
-        caveat: ['Instrument Serif', 'Georgia', 'Times New Roman', 'serif'],
-        writing: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
-        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'],
-        serif: ['Instrument Serif', 'Georgia', 'Times New Roman', 'serif'],
+        display: ['Arial', 'Helvetica', 'sans-serif'],
+        caveat: ['Arial', 'Helvetica', 'sans-serif'],
+        writing: ['Arial', 'Helvetica', 'sans-serif'],
+        sans: ['Arial', 'Helvetica', 'sans-serif'],
+        serif: ['Arial', 'Helvetica', 'sans-serif'],
         mono: ['JetBrains Mono', 'Fira Code', 'Consolas', 'monospace'],
       },
       colors: {

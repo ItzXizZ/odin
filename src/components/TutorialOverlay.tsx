@@ -12,6 +12,11 @@ interface Rect {
 }
 
 const COACH_WIDTH = 460
+const END_TUTORIAL_CONFIRM = 'Are you sure you want to end the tutorial?'
+
+function confirmEndTutorial(onConfirm: () => void) {
+  if (window.confirm(END_TUTORIAL_CONFIRM)) onConfirm()
+}
 
 /* ── A tiny typewriter so Odin's mouth has something to move for ── */
 function useTypewriter(text: string, speed = 18) {
@@ -70,7 +75,11 @@ function IntroModal() {
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ type: 'spring', stiffness: 260, damping: 26 }}
       >
-        <button className="odin-intro-close" onClick={stop} aria-label="Skip intro">
+        <button
+          className="odin-intro-close"
+          onClick={() => confirmEndTutorial(stop)}
+          aria-label="Skip intro"
+        >
           <X size={18} />
         </button>
 
@@ -237,7 +246,7 @@ function CoachTour() {
   // Keyboard shortcuts (tour only).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') stop()
+      if (e.key === 'Escape') confirmEndTutorial(stop)
       else if ((e.key === 'ArrowRight' || e.key === 'Enter') && canAdvance) next()
       else if (e.key === 'ArrowLeft') prev()
     }
@@ -306,7 +315,7 @@ function CoachTour() {
         </motion.div>
 
         <div className="odin-coach-bubble">
-          <button className="tour-close" onClick={stop} aria-label="Exit tour">
+          <button className="tour-close" onClick={() => confirmEndTutorial(stop)} aria-label="Exit tour">
             <X size={14} />
           </button>
 
@@ -386,7 +395,7 @@ function CoachTour() {
             )}
 
             <div className="coach-meta-row">
-              <button className="tour-skip" onClick={stop}>
+              <button className="tour-skip" onClick={() => confirmEndTutorial(stop)}>
                 Exit masterclass
               </button>
               {!isFirst && (
