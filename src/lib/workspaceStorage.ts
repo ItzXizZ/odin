@@ -84,7 +84,8 @@ export function subscribeWorkspaceSaveStatus(listener: (status: WorkspaceSaveSta
 /** Active user id — set by the auth layer so storage can be scoped per person. */
 let currentUserId: string | null = null
 
-const GUEST_SESSION_KEY = 'odin-guest-session-id'
+const GUEST_SESSION_KEY = 'odin-guest-session-id-v2'
+const LEGACY_GUEST_PURGE_KEY = 'odin-shared-guest-purged-v2'
 let ephemeralGuestId: string | null = null
 
 /** Per-browser-tab guest id so unsigned tutorial users never share a workspace. */
@@ -105,7 +106,7 @@ function getGuestSessionId(): string {
 /** Scope id for local mirrors (signed-in user, guest session, or legacy local mode). */
 function localStorageScope(): string {
   if (currentUserId) return currentUserId
-  if (isAuthConfigured) return getGuestSessionId()
+  if (isAuthConfigured) return `guest:${getGuestSessionId()}`
   return 'local'
 }
 
@@ -136,15 +137,44 @@ function localKey(name: string): string {
   return `${name}:${localStorageScope()}`
 }
 
-/** Read scoped local mirror, falling back to the legacy unscoped key once. */
+/** Read scoped local mirror; legacy unscoped key only for pre-auth local-only mode. */
 function readScopedLocal(name: string): string | null {
   const key = localKey(name)
   const scoped = readLocal(key)
   if (scoped != null) return scoped
-  if (currentUserId) return null
+  if (currentUserId || isAuthConfigured) return null
   const legacy = readLocal(name)
   if (legacy != null) mirrorToLocal(key, legacy)
   return legacy
+}
+
+/** Drop the old communal guest keys from localStorage (once per browser). */
+function purgeLegacySharedGuestStorage(name: string) {
+  if (!isAuthConfigured) return
+  try {
+    if (localStorage.getItem(LEGACY_GUEST_PURGE_KEY) === '1') return
+
+    // Unscoped workspace every unsigned user used to share (local + cloud mirror).
+    localStorage.removeItem(name)
+
+    // v1 per-tab ids (no guest: prefix) — remove that tab's copy if present.
+    const v1Session = sessionStorage.getItem('odin-guest-session-id')
+    if (v1Session) localStorage.removeItem(`${name}:${v1Session}`)
+    sessionStorage.removeItem('odin-guest-session-id')
+
+    const toRemove: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (!k) continue
+      // Unscoped embed scroll keys from the communal era.
+      if (k.startsWith('odin-embed-scroll:') && k.split(':').length === 2) toRemove.push(k)
+    }
+    for (const k of toRemove) localStorage.removeItem(k)
+
+    localStorage.setItem(LEGACY_GUEST_PURGE_KEY, '1')
+  } catch {
+    /* private mode / quota */
+  }
 }
 
 async function authHeaders(): Promise<Record<string, string>> {
@@ -320,6 +350,7 @@ export const workspaceStorage: StateStorage = {
 
     // Guests never touch the cloud — each unsigned session keeps its own local workspace.
     if (!currentUserId) {
+      purgeLegacySharedGuestStorage(name)
       hydrated = true
       return readScopedLocal(name)
     }

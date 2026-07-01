@@ -12,6 +12,7 @@ import {
   ensureBuckets,
   getWorkspaceState,
   putWorkspaceState,
+  purgeSharedGuestWorkspace,
   uploadAsset,
   getUserFromToken,
 } from './server/supabase.js'
@@ -739,6 +740,7 @@ app.listen(PORT, async () => {
   if (isSupabaseConfigured()) {
     try {
       await ensureBuckets()
+      await purgeSharedGuestWorkspace()
     } catch (err) {
       console.warn('  Supabase bucket setup warning:', err.message)
     }

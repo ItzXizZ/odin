@@ -86,6 +86,22 @@ export async function getWorkspaceState(userId) {
   return await data.text()
 }
 
+/** Delete a user's persisted workspace state blob (no-op if missing). */
+export async function deleteWorkspaceState(userId) {
+  const supabase = getClient()
+  if (!supabase) return
+  const { stateBucket } = cfg()
+  const { error } = await supabase.storage.from(stateBucket).remove([statePath(userId)])
+  if (error && !/not found/i.test(error.message)) {
+    console.warn('[supabase] deleteWorkspaceState failed:', error.message)
+  }
+}
+
+/** Remove the legacy communal guest workspace blob (pre-auth isolation). */
+export async function purgeSharedGuestWorkspace() {
+  await deleteWorkspaceState('default')
+}
+
 /** Persist a user's workspace state blob (overwrites that user's object). */
 export async function putWorkspaceState(userId, value) {
   const supabase = getClient()
