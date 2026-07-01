@@ -924,7 +924,7 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
         const state = persisted as Record<string, unknown>
         if (version < 8 && Array.isArray(state.documents)) {
           const docs = state.documents as Record<string, unknown>[]
-          state.documents = docs.filter((d) => !isBlankDocument(d as WritingDocument))
+          state.documents = docs.filter((d) => !isBlankDocument(d as Parameters<typeof isBlankDocument>[0]))
           const activeId = state.activeDocumentId as string | null | undefined
           if (
             activeId &&
