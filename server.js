@@ -44,13 +44,13 @@ function getClient(apiKey) {
 /**
  * Resolve the user making a persistence request from their bearer token.
  *  - With a valid token → that user's id (data is scoped to them).
- *  - With no token → 'default' (legacy/local mode for setups without auth).
+ *  - With no token → 401 (guest/tutorial data stays local-only in the browser).
  *  - With an invalid/expired token → { error } so the caller can return 401.
  */
 async function resolveUserId(req) {
   const header = req.headers['authorization'] || ''
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null
-  if (!token) return { userId: 'default' }
+  if (!token) return { error: 'Authentication required' }
   const user = await getUserFromToken(token)
   if (!user) return { error: 'Invalid or expired session' }
   return { userId: user.id }

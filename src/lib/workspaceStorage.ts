@@ -1,5 +1,5 @@
 import type { StateStorage } from 'zustand/middleware'
-import { getAccessToken } from './supabase'
+import { getAccessToken, isAuthConfigured } from './supabase'
 import { useStore } from '../store/useStore'
 import {
   isDestructiveWorkspaceWipe,
@@ -14,6 +14,9 @@ import {
  * who already have local data. Data is scoped per signed-in user: each request
  * carries the user's access token, and the local mirror key is namespaced by
  * user id so multiple people on one browser never see each other's work.
+ *
+ * Unsigned guests (tutorial mode) never sync to the cloud. Each browser tab gets
+ * its own session-scoped local workspace so tutorial adventures aren't shared.
  *
  * Saving rules (designed for "constantly saving" without hammering the network):
  *  - writes are debounced ~800ms after the last change,
@@ -81,6 +84,31 @@ export function subscribeWorkspaceSaveStatus(listener: (status: WorkspaceSaveSta
 /** Active user id — set by the auth layer so storage can be scoped per person. */
 let currentUserId: string | null = null
 
+const GUEST_SESSION_KEY = 'odin-guest-session-id'
+let ephemeralGuestId: string | null = null
+
+/** Per-browser-tab guest id so unsigned tutorial users never share a workspace. */
+function getGuestSessionId(): string {
+  try {
+    let id = sessionStorage.getItem(GUEST_SESSION_KEY)
+    if (!id) {
+      id = crypto.randomUUID()
+      sessionStorage.setItem(GUEST_SESSION_KEY, id)
+    }
+    return id
+  } catch {
+    if (!ephemeralGuestId) ephemeralGuestId = crypto.randomUUID()
+    return ephemeralGuestId
+  }
+}
+
+/** Scope id for local mirrors (signed-in user, guest session, or legacy local mode). */
+function localStorageScope(): string {
+  if (currentUserId) return currentUserId
+  if (isAuthConfigured) return getGuestSessionId()
+  return 'local'
+}
+
 /**
  * Bind persistence to a specific user (or null for local/anonymous mode).
  * Called by the auth provider whenever the signed-in identity changes; it also
@@ -100,12 +128,23 @@ export function setWorkspaceUser(userId: string | null) {
 
 /** For namespacing other local mirrors (e.g. embed scroll positions). */
 export function getWorkspaceStorageUserId(): string | null {
-  return currentUserId
+  return currentUserId ?? localStorageScope()
 }
 
-/** Namespace the local mirror key per user to avoid cross-account leakage. */
+/** Namespace the local mirror key per user/guest session to avoid cross-account leakage. */
 function localKey(name: string): string {
-  return currentUserId ? `${name}:${currentUserId}` : name
+  return `${name}:${localStorageScope()}`
+}
+
+/** Read scoped local mirror, falling back to the legacy unscoped key once. */
+function readScopedLocal(name: string): string | null {
+  const key = localKey(name)
+  const scoped = readLocal(key)
+  if (scoped != null) return scoped
+  if (currentUserId) return null
+  const legacy = readLocal(name)
+  if (legacy != null) mirrorToLocal(key, legacy)
+  return legacy
 }
 
 async function authHeaders(): Promise<Record<string, string>> {
@@ -279,6 +318,12 @@ export const workspaceStorage: StateStorage = {
     editedSinceLoad = false
     stopRecovery()
 
+    // Guests never touch the cloud — each unsigned session keeps its own local workspace.
+    if (!currentUserId) {
+      hydrated = true
+      return readScopedLocal(name)
+    }
+
     let result: LoadResult = { status: 'error' }
     for (let attempt = 0; attempt <= LOAD_RETRIES; attempt++) {
       result = await loadWorkspaceOnce()
@@ -291,7 +336,7 @@ export const workspaceStorage: StateStorage = {
 
     if (result.status === 'ok') {
       cloudWritable = true
-      const local = readLocal(key)
+      const local = readScopedLocal(name)
       // Never let a stale/empty cloud snapshot clobber a richer local mirror.
       if (local != null && isLocalWorkspaceRicher(local, result.value)) {
         mirrorToLocal(key, local)
@@ -305,26 +350,26 @@ export const workspaceStorage: StateStorage = {
     if (result.status === 'empty') {
       // Cloud reachable but empty — safe to write, and migrate local data up.
       cloudWritable = true
-      const local = readLocal(key)
+      const local = readScopedLocal(name)
       if (local != null) void pushToCloud(local)
       return local
     }
 
     if (result.status === 'localMode') {
       // No cloud backend; run purely on the local mirror.
-      return readLocal(key)
+      return readScopedLocal(name)
     }
 
     // status === 'error': render from the local mirror but keep the cloud
     // read-only until we can confirm its contents, so we never clobber it.
     setSaveStatus('error')
     startRecovery(key)
-    return readLocal(key)
+    return readScopedLocal(name)
   },
 
   setItem(name, value) {
     const key = localKey(name)
-    const existing = readLocal(key)
+    const existing = readScopedLocal(name)
     // Block boot/hydration races from wiping real saved progress.
     if (existing && isDestructiveWorkspaceWipe(existing, value)) {
       return
