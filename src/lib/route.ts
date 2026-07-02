@@ -1,4 +1,5 @@
 import type { VisualMessage } from './visual'
+import { authHeader } from './supabase'
 
 export type ExplorationAction =
   | { action: 'text' }
@@ -23,7 +24,7 @@ export async function routeExploration(options: RouteOptions): Promise<Explorati
   try {
     const res = await fetch('/api/route', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
       body: JSON.stringify(options),
       signal: AbortSignal.timeout(30000),
     })

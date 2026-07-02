@@ -15,7 +15,18 @@ import {
   purgeSharedGuestWorkspace,
   uploadAsset,
   getUserFromToken,
+  getSubscription,
+  getSubscriptionByPaypalId,
+  upsertSubscription,
 } from './server/supabase.js'
+import {
+  isPayPalConfigured,
+  paypalPublicConfig,
+  getSubscriptionDetails,
+  verifyWebhookSignature,
+  mapStatus,
+  periodEndFrom,
+} from './server/paypal.js'
 
 dotenv.config()
 
@@ -55,6 +66,43 @@ async function resolveUserId(req) {
   const user = await getUserFromToken(token)
   if (!user) return { error: 'Invalid or expired session' }
   return { userId: user.id }
+}
+
+/**
+ * Whether a stored subscription row currently grants access. During the free
+ * trial PayPal reports the subscription as ACTIVE, so "active" covers the trial
+ * too. A cancelled subscription still has access until the paid period ends.
+ */
+function subscriptionIsActive(sub) {
+  if (!sub) return false
+  if (sub.status === 'active') return true
+  if (sub.status === 'cancelled' && sub.current_period_end) {
+    return new Date(sub.current_period_end).getTime() > Date.now()
+  }
+  return false
+}
+
+/**
+ * Gate the expensive AI endpoints behind an active trial/subscription — but only
+ * when billing is actually configured. Guests (no token) keep the tutorial
+ * teaser; signed-in users must have started their trial.
+ *
+ * Returns { ok: true } to proceed, or { ok: false, status, error } to reject.
+ */
+async function requireActiveSubscription(req) {
+  // Billing not set up (local/dev) → don't gate anything.
+  if (!isPayPalConfigured() || !isSupabaseConfigured()) return { ok: true }
+
+  const header = req.headers['authorization'] || ''
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null
+  // No/!invalid token → treat as guest (tutorial teaser stays free).
+  if (!token) return { ok: true, guest: true }
+  const user = await getUserFromToken(token)
+  if (!user) return { ok: true, guest: true }
+
+  const sub = await getSubscription(user.id)
+  if (subscriptionIsActive(sub)) return { ok: true, userId: user.id }
+  return { ok: false, status: 402, error: 'A free trial or subscription is required.' }
 }
 
 // Health check
@@ -246,6 +294,9 @@ app.post('/api/research', async (req, res) => {
   const { query } = req.body
   if (!query?.trim()) return res.status(400).json({ error: 'Query required' })
 
+  const access = await requireActiveSubscription(req)
+  if (!access.ok) return res.status(access.status).json({ error: access.error, code: 'subscription_required' })
+
   try {
     // Pull a slightly larger pool so the embeddable re-ranking has room to work.
     const raw = rankByEmbeddability(await searchWeb(query.trim(), 8))
@@ -264,6 +315,9 @@ app.post('/api/research', async (req, res) => {
 app.post('/api/route', async (req, res) => {
   const { prompt, messageChain, context, excerpt, apiKey } = req.body
   if (!prompt?.trim()) return res.status(400).json({ error: 'Prompt required' })
+
+  const access = await requireActiveSubscription(req)
+  if (!access.ok) return res.status(access.status).json({ error: access.error, code: 'subscription_required' })
 
   try {
     const decision = await decideExplorationAction({
@@ -285,6 +339,9 @@ app.post('/api/visual', async (req, res) => {
   const { query, apiKey, context, parentPrompt, parentResponse, excerpt, messageChain, method } =
     req.body
   if (!query?.trim()) return res.status(400).json({ error: 'Query required' })
+
+  const access = await requireActiveSubscription(req)
+  if (!access.ok) return res.status(access.status).json({ error: access.error, code: 'subscription_required' })
 
   try {
     const visual = await generateVisualAsset({
@@ -321,6 +378,9 @@ app.get('/api/image-proxy', async (req, res) => {
 // Streaming chat endpoint — SSE
 app.post('/api/chat', async (req, res) => {
   const { messages, system, apiKey } = req.body
+
+  const access = await requireActiveSubscription(req)
+  if (!access.ok) return res.status(access.status).json({ error: access.error, code: 'subscription_required' })
 
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
@@ -360,6 +420,8 @@ app.post('/api/chat/tools', async (req, res) => {
   if (!Array.isArray(tools) || tools.length === 0) {
     return res.status(400).json({ error: 'Tools required' })
   }
+  const access = await requireActiveSubscription(req)
+  if (!access.ok) return res.status(access.status).json({ error: access.error, code: 'subscription_required' })
   try {
     const client = getClient(apiKey)
     const response = await client.messages.create({
@@ -378,6 +440,8 @@ app.post('/api/chat/tools', async (req, res) => {
 // Non-streaming chat for simpler calls
 app.post('/api/chat/sync', async (req, res) => {
   const { messages, system, apiKey, maxTokens } = req.body
+  const access = await requireActiveSubscription(req)
+  if (!access.ok) return res.status(access.status).json({ error: access.error, code: 'subscription_required' })
   try {
     const client = getClient(apiKey)
     const response = await client.messages.create({
@@ -720,6 +784,114 @@ app.post('/api/storage/upload', async (req, res) => {
   }
 })
 
+// ── Subscriptions / PayPal (card-required free trial) ──
+
+// Public PayPal config the frontend needs to render the subscribe button.
+app.get('/api/paypal/config', (_req, res) => {
+  res.json(paypalPublicConfig())
+})
+
+// Current user's subscription status. Used by the frontend paywall gate.
+app.get('/api/subscription', async (req, res) => {
+  // Billing off → treat everyone as entitled so local/dev isn't gated.
+  if (!isPayPalConfigured() || !isSupabaseConfigured()) {
+    return res.json({ active: true, status: 'unconfigured', billingEnabled: false })
+  }
+  const { userId, error } = await resolveUserId(req)
+  if (error) return res.status(401).json({ error })
+  try {
+    const sub = await getSubscription(userId)
+    res.json({
+      active: subscriptionIsActive(sub),
+      status: sub?.status || 'none',
+      currentPeriodEnd: sub?.current_period_end || null,
+      billingEnabled: true,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Called from the PayPal button's onApprove: verify the subscription against
+// PayPal and record it against the signed-in user.
+app.post('/api/paypal/activate', async (req, res) => {
+  if (!isPayPalConfigured()) return res.status(501).json({ error: 'PayPal not configured' })
+  const { userId, error } = await resolveUserId(req)
+  if (error) return res.status(401).json({ error })
+
+  const subscriptionId = (req.body?.subscriptionId || '').trim()
+  if (!subscriptionId) return res.status(400).json({ error: 'Missing subscriptionId' })
+
+  try {
+    const details = await getSubscriptionDetails(subscriptionId)
+    const status = mapStatus(details.status)
+    await upsertSubscription(userId, {
+      paypal_subscription_id: subscriptionId,
+      plan_id: details.plan_id || null,
+      status,
+      current_period_end: periodEndFrom(details),
+    })
+    const sub = await getSubscription(userId)
+    res.json({ active: subscriptionIsActive(sub), status })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// PayPal webhook — keeps stored status authoritative across the subscription
+// lifecycle (renewals, cancellations, payment failures, expiries).
+app.post('/api/paypal/webhook', async (req, res) => {
+  if (!isPayPalConfigured()) return res.status(200).json({ ok: true })
+  const event = req.body || {}
+  try {
+    const verified = await verifyWebhookSignature(req.headers, event)
+    if (!verified) return res.status(400).json({ error: 'Invalid webhook signature' })
+
+    const resource = event.resource || {}
+    // Subscription events carry the id on the resource; payment events carry it
+    // under billing_agreement_id.
+    const subscriptionId = resource.id || resource.billing_agreement_id
+    const eventType = event.event_type || ''
+
+    if (subscriptionId) {
+      const existing = await getSubscriptionByPaypalId(subscriptionId)
+      // custom_id (set to the user id when the button is created) lets us map a
+      // webhook to a user even if /activate never ran.
+      const userId = existing?.user_id || resource.custom_id || null
+
+      if (userId) {
+        let status = existing?.status || 'none'
+        let periodEnd = existing?.current_period_end || null
+
+        if (/BILLING\.SUBSCRIPTION\.(ACTIVATED|RE-?ACTIVATED|CREATED)/i.test(eventType)) status = 'active'
+        else if (/BILLING\.SUBSCRIPTION\.CANCELLED/i.test(eventType)) status = 'cancelled'
+        else if (/BILLING\.SUBSCRIPTION\.SUSPENDED/i.test(eventType)) status = 'suspended'
+        else if (/BILLING\.SUBSCRIPTION\.EXPIRED/i.test(eventType)) status = 'expired'
+        else if (/PAYMENT\.SALE\.COMPLETED|BILLING\.SUBSCRIPTION\.UPDATED/i.test(eventType)) {
+          // Refresh from source of truth to pick up the new billing date.
+          try {
+            const details = await getSubscriptionDetails(subscriptionId)
+            status = mapStatus(details.status)
+            periodEnd = periodEndFrom(details) || periodEnd
+          } catch { /* keep existing */ }
+        }
+
+        await upsertSubscription(userId, {
+          paypal_subscription_id: subscriptionId,
+          plan_id: resource.plan_id || existing?.plan_id || null,
+          status,
+          current_period_end: periodEnd,
+        })
+      }
+    }
+
+    res.json({ ok: true })
+  } catch (err) {
+    console.warn('[paypal] webhook error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 if (isProduction) {
   app.get('/privacy', (_req, res) => {
     res.sendFile(path.join(distPath, 'privacy/index.html'))
@@ -750,5 +922,6 @@ app.listen(PORT, async () => {
   console.log(`  Research: ${process.env.TAVILY_API_KEY ? '✓ Tavily' : '○ DuckDuckGo fallback (set TAVILY_API_KEY for better results)'}`)
   console.log(`  Image gen: ${process.env.OPENAI_API_KEY ? '✓ GPT Image (gpt-image-1)' : process.env.GOOGLE_API_KEY ? '✓ Gemini Imagen' : process.env.REPLICATE_API_KEY ? '✓ Flux Pro' : '○ PubChem + web photos only (add OPENAI_API_KEY for best quality)'}`)
   console.log(`  Cloud sync: ${isSupabaseConfigured() ? '✓ Supabase (state + assets)' : '○ localStorage only (set SUPABASE_URL + SUPABASE_SECRET_KEY)'}`)
+  console.log(`  Billing: ${isPayPalConfigured() ? '✓ PayPal free-trial paywall enabled' : '○ open access (set PAYPAL_CLIENT_ID + PAYPAL_SECRET + PAYPAL_PLAN_ID to enable)'}`)
   if (!isProduction) console.log(`\n  Frontend: http://localhost:5173\n`)
 })

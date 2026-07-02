@@ -43,3 +43,11 @@ export function setCachedAccessToken(token: string | null) {
 export async function getAccessToken(): Promise<string | null> {
   return cachedAccessToken
 }
+
+/**
+ * Authorization header for API calls, attached whenever the user is signed in.
+ * Returns an empty object for guests so the tutorial/teaser endpoints stay open.
+ */
+export function authHeader(): Record<string, string> {
+  return cachedAccessToken ? { Authorization: `Bearer ${cachedAccessToken}` } : {}
+}

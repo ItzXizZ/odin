@@ -1,4 +1,5 @@
 import type { VisualAsset } from '../store/useStore'
+import { authHeader } from './supabase'
 
 export interface VisualMessage {
   role: 'user' | 'assistant'
@@ -39,7 +40,7 @@ export async function generateVisual(options: GenerateVisualOptions): Promise<Ge
   try {
     res = await fetch('/api/visual', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
       body: JSON.stringify(options),
       signal: AbortSignal.timeout(VISUAL_TIMEOUT_MS),
     })

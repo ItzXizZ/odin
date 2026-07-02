@@ -1,4 +1,5 @@
 import type { SourceRef } from './sources'
+import { authHeader } from './supabase'
 
 export interface ResearchResult {
   sources: SourceRef[]
@@ -11,7 +12,7 @@ export async function researchQuery(query: string): Promise<ResearchResult> {
   try {
     res = await fetch('/api/research', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
       body: JSON.stringify({ query }),
       signal: AbortSignal.timeout(30000),
     })

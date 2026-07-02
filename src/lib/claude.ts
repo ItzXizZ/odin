@@ -1,3 +1,5 @@
+import { authHeader } from './supabase'
+
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -25,7 +27,7 @@ export async function streamChat(
     resetIdle()
     const res = await fetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
       body: JSON.stringify({ messages, system, apiKey }),
       signal: controller.signal,
     })
@@ -94,7 +96,7 @@ export async function syncChat(
   try {
     res = await fetch('/api/chat/sync', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
       body: JSON.stringify({ messages, system, apiKey, maxTokens }),
       signal: AbortSignal.timeout(90000),
     })

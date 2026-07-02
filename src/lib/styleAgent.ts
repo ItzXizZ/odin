@@ -11,6 +11,7 @@
  */
 
 import type { StyleRule } from './style'
+import { authHeader } from './supabase'
 
 export interface ChatToolMessage {
   role: 'user' | 'assistant'
@@ -263,7 +264,7 @@ async function callToolEndpoint(
 ): Promise<StyleAgentResult> {
   const res = await fetch('/api/chat/tools', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify({ messages, system, apiKey, tools: STYLE_AGENT_TOOLS, maxTokens: 1024 }),
     signal: AbortSignal.timeout(45000),
   })

@@ -115,6 +115,54 @@ export async function putWorkspaceState(userId, value) {
   if (error) throw new Error(error.message)
 }
 
+// ── Subscriptions (card-required free trial via PayPal) ──
+
+const SUBSCRIPTIONS_TABLE = 'subscriptions'
+
+/** Read a user's subscription row (or null if they've never subscribed). */
+export async function getSubscription(userId) {
+  const supabase = getClient()
+  if (!supabase || !userId) return null
+  const { data, error } = await supabase
+    .from(SUBSCRIPTIONS_TABLE)
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) {
+    console.warn('[supabase] getSubscription failed:', error.message)
+    return null
+  }
+  return data
+}
+
+/** Look up a subscription row by its PayPal subscription id (used by webhooks). */
+export async function getSubscriptionByPaypalId(paypalSubscriptionId) {
+  const supabase = getClient()
+  if (!supabase || !paypalSubscriptionId) return null
+  const { data, error } = await supabase
+    .from(SUBSCRIPTIONS_TABLE)
+    .select('*')
+    .eq('paypal_subscription_id', paypalSubscriptionId)
+    .maybeSingle()
+  if (error) {
+    console.warn('[supabase] getSubscriptionByPaypalId failed:', error.message)
+    return null
+  }
+  return data
+}
+
+/** Insert/update a user's subscription row. `fields` is merged over user_id. */
+export async function upsertSubscription(userId, fields) {
+  const supabase = getClient()
+  if (!supabase) throw new Error('Supabase not configured')
+  if (!userId) throw new Error('Missing userId')
+  const row = { user_id: userId, ...fields, updated_at: new Date().toISOString() }
+  const { error } = await supabase
+    .from(SUBSCRIPTIONS_TABLE)
+    .upsert(row, { onConflict: 'user_id' })
+  if (error) throw new Error(error.message)
+}
+
 function parseDataUrl(dataUrl) {
   const match = /^data:([^;]+);base64,(.*)$/s.exec(dataUrl)
   if (!match) return null

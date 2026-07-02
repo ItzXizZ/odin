@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import Layout from './components/Layout'
 import LoginScreen from './components/LoginScreen'
+import TrialPaywall from './components/TrialPaywall'
 import IphoneUnsupportedScreen, { isIPhoneDevice } from './components/IphoneUnsupportedScreen'
 import { AuthProvider, SignupCompleteHandler, useAuth } from './lib/auth'
+import { fetchSubscriptionStatus } from './lib/subscription'
 import { clearOnboardingFinished, hasFinishedOnboarding, onOnboardingFinished } from './lib/onboarding'
 import { useStore } from './store/useStore'
 import OdinHead from './components/OdinHead'
@@ -244,6 +246,34 @@ function TutorialCompleteScreen({
   )
 }
 
+/**
+ * Signed-in gate: a new user must start their card-required free trial before
+ * reaching the studio. Fails open (renders the app) whenever billing is off or
+ * the status check errors, so a real subscriber is never locked out.
+ */
+function EntitledApp() {
+  const [state, setState] = useState<'checking' | 'entitled' | 'paywall'>('checking')
+
+  const check = useCallback(async () => {
+    const status = await fetchSubscriptionStatus()
+    setState(status.active ? 'entitled' : 'paywall')
+  }, [])
+
+  useEffect(() => {
+    void check()
+  }, [check])
+
+  if (state === 'checking') return <Splash />
+  if (state === 'paywall') return <TrialPaywall onActivated={() => setState('entitled')} />
+
+  return (
+    <>
+      <ServerBanner />
+      <Layout />
+    </>
+  )
+}
+
 type GuestView = 'landing' | 'tutorial' | 'signin'
 
 function Gate() {
@@ -291,12 +321,8 @@ function Gate() {
     )
   }
 
-  return (
-    <>
-      <ServerBanner />
-      <Layout />
-    </>
-  )
+  // Signed in (or local mode): enforce the trial/subscription before the studio.
+  return <EntitledApp />
 }
 
 export default function App() {
