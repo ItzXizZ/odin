@@ -6,6 +6,7 @@ import TrialPaywall from './components/TrialPaywall'
 import IphoneUnsupportedScreen, { isIPhoneDevice } from './components/IphoneUnsupportedScreen'
 import { AuthProvider, SignupCompleteHandler, useAuth } from './lib/auth'
 import { confirmCheckout, fetchSubscriptionStatus } from './lib/subscription'
+import { trackTrialConversion } from './lib/conversion'
 import { clearOnboardingFinished, hasFinishedOnboarding, onOnboardingFinished } from './lib/onboarding'
 import { useStore } from './store/useStore'
 import OdinHead from './components/OdinHead'
@@ -271,6 +272,7 @@ function EntitledApp() {
         const confirmed = await confirmCheckout(sessionId)
         if (cancelled) return
         if (confirmed.active) {
+          trackTrialConversion()
           cleanUrl()
           setState('entitled')
           return
@@ -288,6 +290,8 @@ function EntitledApp() {
           return
         }
         if (status.active) {
+          // Only count as a conversion when they just returned from checkout.
+          if (returned === 'success') trackTrialConversion()
           cleanUrl()
           setState('entitled')
           return
