@@ -5,7 +5,7 @@ import LoginScreen from './components/LoginScreen'
 import TrialPaywall from './components/TrialPaywall'
 import IphoneUnsupportedScreen, { isIPhoneDevice } from './components/IphoneUnsupportedScreen'
 import { AuthProvider, SignupCompleteHandler, useAuth } from './lib/auth'
-import { fetchSubscriptionStatus } from './lib/subscription'
+import { confirmCheckout, fetchSubscriptionStatus } from './lib/subscription'
 import { clearOnboardingFinished, hasFinishedOnboarding, onOnboardingFinished } from './lib/onboarding'
 import { useStore } from './store/useStore'
 import OdinHead from './components/OdinHead'
@@ -257,14 +257,27 @@ function EntitledApp() {
 
   useEffect(() => {
     let cancelled = false
-    const returned = new URLSearchParams(window.location.search).get('checkout')
+    const params = new URLSearchParams(window.location.search)
+    const returned = params.get('checkout')
+    const sessionId = params.get('session_id')
 
     const cleanUrl = () => {
       if (returned) window.history.replaceState({}, '', '/')
     }
 
     async function resolveEntitlement() {
-      // On return from Stripe the webhook may lag a moment, so poll briefly.
+      // Returning from Stripe: confirm the session directly (instant, no webhook needed).
+      if (returned === 'success' && sessionId) {
+        const confirmed = await confirmCheckout(sessionId)
+        if (cancelled) return
+        if (confirmed.active) {
+          cleanUrl()
+          setState('entitled')
+          return
+        }
+      }
+
+      // Otherwise (or as a fallback) read status, polling briefly if we just paid.
       const attempts = returned === 'success' ? 6 : 1
       for (let i = 0; i < attempts; i++) {
         const status = await fetchSubscriptionStatus()

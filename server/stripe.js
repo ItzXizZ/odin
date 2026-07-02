@@ -64,10 +64,17 @@ export async function createCheckoutSession({ userId, email, origin }) {
     customer_email: email || undefined,
     metadata: { user_id: userId },
     allow_promotion_codes: true,
-    success_url: `${origin}/?checkout=success`,
+    success_url: `${origin}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
     cancel_url: `${origin}/?checkout=cancel`,
   })
   return session.url
+}
+
+/** Retrieve a Checkout Session with its subscription expanded. */
+export async function getCheckoutSession(sessionId) {
+  const stripe = getStripe()
+  if (!stripe) throw new Error('Stripe not configured')
+  return stripe.checkout.sessions.retrieve(sessionId, { expand: ['subscription'] })
 }
 
 /** Verify + parse a Stripe webhook. `rawBody` must be the untouched request body. */

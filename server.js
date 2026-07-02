@@ -22,6 +22,7 @@ import {
 import {
   isStripeConfigured,
   createCheckoutSession,
+  getCheckoutSession,
   constructEvent,
   getSubscription as getStripeSubscription,
   mapStatus,
@@ -841,6 +842,38 @@ app.post('/api/stripe/create-checkout-session', async (req, res) => {
     const origin = req.headers.origin || `${req.protocol}://${req.get('host')}`
     const url = await createCheckoutSession({ userId, email: user?.email, origin })
     res.json({ url })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Confirm a completed Checkout Session immediately (doesn't rely on the webhook,
+// so entitlement is granted the instant the user returns from Stripe).
+app.post('/api/stripe/confirm', async (req, res) => {
+  if (!isStripeConfigured()) return res.status(501).json({ error: 'Stripe not configured' })
+  const { userId, error } = await resolveUserId(req)
+  if (error) return res.status(401).json({ error })
+  const sessionId = (req.body?.sessionId || '').trim()
+  if (!sessionId) return res.status(400).json({ error: 'Missing sessionId' })
+
+  try {
+    const session = await getCheckoutSession(sessionId)
+    // Security: only accept a session that belongs to this signed-in user.
+    const owner = session.metadata?.user_id || session.client_reference_id
+    if (owner && owner !== userId) {
+      return res.status(403).json({ error: 'Session does not belong to this user' })
+    }
+    const subscription = session.subscription
+    if (subscription && typeof subscription === 'object') {
+      await upsertSubscription(userId, {
+        customer_id: subscription.customer || session.customer || null,
+        subscription_id: subscription.id,
+        status: mapStatus(subscription.status),
+        current_period_end: periodEndFrom(subscription),
+      })
+    }
+    const sub = await getSubscription(userId)
+    res.json({ active: subscriptionIsActive(sub), status: sub?.status || 'none', billingEnabled: true })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

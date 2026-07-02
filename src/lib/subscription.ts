@@ -40,6 +40,24 @@ export async function fetchSubscriptionStatus(): Promise<SubscriptionStatus> {
 }
 
 /**
+ * Confirm a completed Checkout Session as soon as the user returns from Stripe,
+ * so entitlement is granted immediately without waiting on the webhook.
+ */
+export async function confirmCheckout(sessionId: string): Promise<SubscriptionStatus> {
+  try {
+    const res = await fetch('/api/stripe/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
+      body: JSON.stringify({ sessionId }),
+    })
+    if (!res.ok) return { active: false, status: 'error', billingEnabled: true }
+    return (await res.json()) as SubscriptionStatus
+  } catch {
+    return { active: false, status: 'error', billingEnabled: true }
+  }
+}
+
+/**
  * Create a Stripe Checkout Session and return its hosted URL. The caller
  * redirects the browser there to collect the card and start the free trial.
  */
