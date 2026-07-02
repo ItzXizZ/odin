@@ -23,6 +23,7 @@ import {
   isStripeConfigured,
   createCheckoutSession,
   getCheckoutSession,
+  createBillingPortalSession,
   constructEvent,
   getSubscription as getStripeSubscription,
   mapStatus,
@@ -874,6 +875,24 @@ app.post('/api/stripe/confirm', async (req, res) => {
     }
     const sub = await getSubscription(userId)
     res.json({ active: subscriptionIsActive(sub), status: sub?.status || 'none', billingEnabled: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Open the Stripe Customer Portal (cancel / update card / view invoices).
+app.post('/api/stripe/create-portal-session', async (req, res) => {
+  if (!isStripeConfigured()) return res.status(501).json({ error: 'Stripe not configured' })
+  const { userId, error } = await resolveUserId(req)
+  if (error) return res.status(401).json({ error })
+  try {
+    const sub = await getSubscription(userId)
+    if (!sub?.customer_id) {
+      return res.status(400).json({ error: 'No subscription to manage', code: 'no_customer' })
+    }
+    const origin = req.headers.origin || `${req.protocol}://${req.get('host')}`
+    const url = await createBillingPortalSession({ customerId: sub.customer_id, returnUrl: `${origin}/` })
+    res.json({ url })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

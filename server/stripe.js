@@ -77,6 +77,17 @@ export async function getCheckoutSession(sessionId) {
   return stripe.checkout.sessions.retrieve(sessionId, { expand: ['subscription'] })
 }
 
+/** Create a Customer Portal session so the user can cancel / manage billing. */
+export async function createBillingPortalSession({ customerId, returnUrl }) {
+  const stripe = getStripe()
+  if (!stripe) throw new Error('Stripe not configured')
+  const session = await stripe.billingPortal.sessions.create({
+    customer: customerId,
+    return_url: returnUrl,
+  })
+  return session.url
+}
+
 /** Verify + parse a Stripe webhook. `rawBody` must be the untouched request body. */
 export function constructEvent(rawBody, signature) {
   const stripe = getStripe()

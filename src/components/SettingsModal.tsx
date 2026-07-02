@@ -1,11 +1,42 @@
-import { useState } from 'react'
-import { X, Key, CheckCircle } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { X, Key, CheckCircle, CreditCard } from 'lucide-react'
 import { useStore } from '../store/useStore'
+import { useAuth } from '../lib/auth'
+import { fetchSubscriptionStatus, openBillingPortal, type SubscriptionStatus } from '../lib/subscription'
 
 export default function SettingsModal() {
   const { apiKey, setApiKey, setShowSettings } = useStore()
+  const { user } = useAuth()
   const [draft, setDraft] = useState(apiKey)
   const [saved, setSaved] = useState(false)
+  const [sub, setSub] = useState<SubscriptionStatus | null>(null)
+  const [portalBusy, setPortalBusy] = useState(false)
+  const [portalError, setPortalError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!user) return
+    let cancelled = false
+    fetchSubscriptionStatus().then((s) => {
+      if (!cancelled) setSub(s)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [user])
+
+  const handleManageSubscription = async () => {
+    setPortalBusy(true)
+    setPortalError(null)
+    try {
+      const url = await openBillingPortal()
+      window.location.href = url
+    } catch (e) {
+      setPortalError(e instanceof Error ? e.message : 'Could not open billing portal.')
+      setPortalBusy(false)
+    }
+  }
+
+  const showSubscription = Boolean(user && sub?.billingEnabled)
 
   const handleSave = () => {
     setApiKey(draft.trim())
@@ -171,6 +202,48 @@ export default function SettingsModal() {
               <p style={{ margin: 0 }}>2. Create an account and add billing</p>
               <p style={{ margin: 0 }}>3. Generate an API key under "API Keys"</p>
             </div>
+
+            {/* Subscription management */}
+            {showSubscription && (
+              <div>
+                <label
+                  className="label"
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.4em', marginBottom: '0.5em' }}
+                >
+                  <CreditCard size={12} />
+                  Subscription
+                </label>
+                <div
+                  style={{
+                    borderRadius: '0.875em',
+                    padding: '0.875em 1em',
+                    background: 'rgba(255,255,255,0.25)',
+                    border: '1px solid rgba(0,0,0,0.07)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '0.75em',
+                  }}
+                >
+                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'rgba(80,80,80,0.85)' }}>
+                    Update your card, view invoices, or cancel anytime.
+                  </p>
+                  <button
+                    onClick={handleManageSubscription}
+                    disabled={portalBusy}
+                    className="btn-ghost"
+                    style={{ whiteSpace: 'nowrap' }}
+                  >
+                    {portalBusy ? 'Opening…' : 'Manage'}
+                  </button>
+                </div>
+                {portalError && (
+                  <p style={{ marginTop: '0.5em', fontSize: '0.75rem', color: 'rgba(170,40,40,0.95)' }}>
+                    {portalError}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Footer */}

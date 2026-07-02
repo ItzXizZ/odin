@@ -58,6 +58,24 @@ export async function confirmCheckout(sessionId: string): Promise<SubscriptionSt
 }
 
 /**
+ * Open the Stripe Customer Portal (cancel / update payment / invoices) and
+ * return its URL for the caller to redirect to.
+ */
+export async function openBillingPortal(): Promise<string> {
+  const res = await fetch('/api/stripe/create-portal-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Could not open billing portal' }))
+    throw new Error(err.error || 'Could not open billing portal')
+  }
+  const { url } = (await res.json()) as { url?: string }
+  if (!url) throw new Error('Billing portal did not return a URL')
+  return url
+}
+
+/**
  * Create a Stripe Checkout Session and return its hosted URL. The caller
  * redirects the browser there to collect the card and start the free trial.
  */
