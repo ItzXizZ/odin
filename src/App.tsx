@@ -252,6 +252,7 @@ function TutorialCompleteScreen({
  * the status check errors, so a real subscriber is never locked out.
  */
 function EntitledApp() {
+  const { signOut } = useAuth()
   const [state, setState] = useState<'checking' | 'entitled' | 'paywall'>('checking')
 
   useEffect(() => {
@@ -268,6 +269,11 @@ function EntitledApp() {
       for (let i = 0; i < attempts; i++) {
         const status = await fetchSubscriptionStatus()
         if (cancelled) return
+        // Stale/deleted session: clear it so the user re-signs in (and hits the paywall).
+        if (status.unauthorized) {
+          void signOut()
+          return
+        }
         if (status.active) {
           cleanUrl()
           setState('entitled')
@@ -284,7 +290,7 @@ function EntitledApp() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [signOut])
 
   if (state === 'checking') return <Splash />
   if (state === 'paywall') return <TrialPaywall />

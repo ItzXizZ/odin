@@ -14,6 +14,8 @@ export interface SubscriptionStatus {
   currentPeriodEnd?: string | null
   /** False when Stripe billing isn't configured (dev/local) — the gate is skipped. */
   billingEnabled: boolean
+  /** True when the session is invalid/expired (e.g. the user was deleted). */
+  unauthorized?: boolean
 }
 
 /** Ask the server whether the signed-in user may use the app. */
@@ -22,8 +24,13 @@ export async function fetchSubscriptionStatus(): Promise<SubscriptionStatus> {
     const res = await fetch('/api/subscription', {
       headers: { ...authHeader() },
     })
+    // 401 = the session no longer maps to a valid user (deleted/expired). Do NOT
+    // fail open — the caller should sign out / show the paywall.
+    if (res.status === 401) {
+      return { active: false, status: 'unauthorized', billingEnabled: true, unauthorized: true }
+    }
     if (!res.ok) {
-      // On any server hiccup, fail OPEN so we never lock out a paying user.
+      // On any other server hiccup, fail OPEN so we never lock out a paying user.
       return { active: true, status: 'error', billingEnabled: false }
     }
     return (await res.json()) as SubscriptionStatus
