@@ -19,8 +19,8 @@ dotenv.config()
 const SQL = `
 create table if not exists public.subscriptions (
   user_id uuid primary key references auth.users(id) on delete cascade,
-  paypal_subscription_id text unique,
-  plan_id text,
+  customer_id text,
+  subscription_id text unique,
   status text not null default 'none',
   current_period_end timestamptz,
   updated_at timestamptz not null default now()

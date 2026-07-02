@@ -16,17 +16,17 @@ import {
   uploadAsset,
   getUserFromToken,
   getSubscription,
-  getSubscriptionByPaypalId,
+  getSubscriptionBySubId,
   upsertSubscription,
 } from './server/supabase.js'
 import {
-  isPayPalConfigured,
-  paypalPublicConfig,
-  getSubscriptionDetails,
-  verifyWebhookSignature,
+  isStripeConfigured,
+  createCheckoutSession,
+  constructEvent,
+  getSubscription as getStripeSubscription,
   mapStatus,
   periodEndFrom,
-} from './server/paypal.js'
+} from './server/stripe.js'
 
 dotenv.config()
 
@@ -43,6 +43,29 @@ const PORT = process.env.PORT || 3001
 if (!isProduction) {
   app.use(cors({ origin: 'http://localhost:5173' }))
 }
+
+// Stripe webhook MUST receive the raw, unparsed body for signature verification,
+// so it is registered before the JSON body parser below.
+app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!isStripeConfigured()) return res.status(200).json({ ok: true })
+  const signature = req.headers['stripe-signature']
+  let event
+  try {
+    event = constructEvent(req.body, signature)
+  } catch (err) {
+    console.warn('[stripe] webhook signature verification failed:', err.message)
+    return res.status(400).json({ error: `Webhook Error: ${err.message}` })
+  }
+
+  try {
+    await handleStripeEvent(event)
+    res.json({ received: true })
+  } catch (err) {
+    console.warn('[stripe] webhook handler error:', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
 app.use(express.json({ limit: '30mb' }))
 
 const upload = multer({ limits: { fileSize: 20 * 1024 * 1024 } })
@@ -91,7 +114,7 @@ function subscriptionIsActive(sub) {
  */
 async function requireActiveSubscription(req) {
   // Billing not set up (local/dev) → don't gate anything.
-  if (!isPayPalConfigured() || !isSupabaseConfigured()) return { ok: true }
+  if (!isStripeConfigured() || !isSupabaseConfigured()) return { ok: true }
 
   const header = req.headers['authorization'] || ''
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null
@@ -784,17 +807,12 @@ app.post('/api/storage/upload', async (req, res) => {
   }
 })
 
-// ── Subscriptions / PayPal (card-required free trial) ──
-
-// Public PayPal config the frontend needs to render the subscribe button.
-app.get('/api/paypal/config', (_req, res) => {
-  res.json(paypalPublicConfig())
-})
+// ── Subscriptions / Stripe (card-required free trial) ──
 
 // Current user's subscription status. Used by the frontend paywall gate.
 app.get('/api/subscription', async (req, res) => {
   // Billing off → treat everyone as entitled so local/dev isn't gated.
-  if (!isPayPalConfigured() || !isSupabaseConfigured()) {
+  if (!isStripeConfigured() || !isSupabaseConfigured()) {
     return res.json({ active: true, status: 'unconfigured', billingEnabled: false })
   }
   const { userId, error } = await resolveUserId(req)
@@ -812,85 +830,62 @@ app.get('/api/subscription', async (req, res) => {
   }
 })
 
-// Called from the PayPal button's onApprove: verify the subscription against
-// PayPal and record it against the signed-in user.
-app.post('/api/paypal/activate', async (req, res) => {
-  if (!isPayPalConfigured()) return res.status(501).json({ error: 'PayPal not configured' })
+// Start the card-required free trial: create a hosted Checkout Session and
+// return its URL for the frontend to redirect to.
+app.post('/api/stripe/create-checkout-session', async (req, res) => {
+  if (!isStripeConfigured()) return res.status(501).json({ error: 'Stripe not configured' })
   const { userId, error } = await resolveUserId(req)
   if (error) return res.status(401).json({ error })
-
-  const subscriptionId = (req.body?.subscriptionId || '').trim()
-  if (!subscriptionId) return res.status(400).json({ error: 'Missing subscriptionId' })
-
   try {
-    const details = await getSubscriptionDetails(subscriptionId)
-    const status = mapStatus(details.status)
-    await upsertSubscription(userId, {
-      paypal_subscription_id: subscriptionId,
-      plan_id: details.plan_id || null,
-      status,
-      current_period_end: periodEndFrom(details),
-    })
-    const sub = await getSubscription(userId)
-    res.json({ active: subscriptionIsActive(sub), status })
+    const user = await getUserFromToken((req.headers['authorization'] || '').slice(7).trim())
+    const origin = req.headers.origin || `${req.protocol}://${req.get('host')}`
+    const url = await createCheckoutSession({ userId, email: user?.email, origin })
+    res.json({ url })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
 })
 
-// PayPal webhook — keeps stored status authoritative across the subscription
-// lifecycle (renewals, cancellations, payment failures, expiries).
-app.post('/api/paypal/webhook', async (req, res) => {
-  if (!isPayPalConfigured()) return res.status(200).json({ ok: true })
-  const event = req.body || {}
-  try {
-    const verified = await verifyWebhookSignature(req.headers, event)
-    if (!verified) return res.status(400).json({ error: 'Invalid webhook signature' })
+/**
+ * Apply a Stripe webhook event to the stored subscription. Kept authoritative
+ * across the lifecycle (trial start, renewals, cancellations, payment failures).
+ */
+async function handleStripeEvent(event) {
+  const obj = event.data?.object || {}
 
-    const resource = event.resource || {}
-    // Subscription events carry the id on the resource; payment events carry it
-    // under billing_agreement_id.
-    const subscriptionId = resource.id || resource.billing_agreement_id
-    const eventType = event.event_type || ''
+  // Resolve the subscription + user id depending on the event shape.
+  let subscription = null
+  let userId = null
 
-    if (subscriptionId) {
-      const existing = await getSubscriptionByPaypalId(subscriptionId)
-      // custom_id (set to the user id when the button is created) lets us map a
-      // webhook to a user even if /activate never ran.
-      const userId = existing?.user_id || resource.custom_id || null
-
-      if (userId) {
-        let status = existing?.status || 'none'
-        let periodEnd = existing?.current_period_end || null
-
-        if (/BILLING\.SUBSCRIPTION\.(ACTIVATED|RE-?ACTIVATED|CREATED)/i.test(eventType)) status = 'active'
-        else if (/BILLING\.SUBSCRIPTION\.CANCELLED/i.test(eventType)) status = 'cancelled'
-        else if (/BILLING\.SUBSCRIPTION\.SUSPENDED/i.test(eventType)) status = 'suspended'
-        else if (/BILLING\.SUBSCRIPTION\.EXPIRED/i.test(eventType)) status = 'expired'
-        else if (/PAYMENT\.SALE\.COMPLETED|BILLING\.SUBSCRIPTION\.UPDATED/i.test(eventType)) {
-          // Refresh from source of truth to pick up the new billing date.
-          try {
-            const details = await getSubscriptionDetails(subscriptionId)
-            status = mapStatus(details.status)
-            periodEnd = periodEndFrom(details) || periodEnd
-          } catch { /* keep existing */ }
-        }
-
-        await upsertSubscription(userId, {
-          paypal_subscription_id: subscriptionId,
-          plan_id: resource.plan_id || existing?.plan_id || null,
-          status,
-          current_period_end: periodEnd,
-        })
-      }
-    }
-
-    res.json({ ok: true })
-  } catch (err) {
-    console.warn('[paypal] webhook error:', err.message)
-    res.status(500).json({ error: err.message })
+  if (event.type === 'checkout.session.completed') {
+    userId = obj.metadata?.user_id || obj.client_reference_id || null
+    if (obj.subscription) subscription = await getStripeSubscription(obj.subscription)
+  } else if (event.type.startsWith('customer.subscription.')) {
+    subscription = obj
+    userId = obj.metadata?.user_id || null
+  } else if (event.type === 'invoice.payment_failed' || event.type === 'invoice.payment_succeeded') {
+    if (obj.subscription) subscription = await getStripeSubscription(obj.subscription)
+    userId = subscription?.metadata?.user_id || null
+  } else {
+    return // event we don't care about
   }
-})
+
+  if (!subscription) return
+
+  // If the event didn't carry our user id, fall back to the stored mapping.
+  if (!userId) {
+    const existing = await getSubscriptionBySubId(subscription.id)
+    userId = existing?.user_id || null
+  }
+  if (!userId) return
+
+  await upsertSubscription(userId, {
+    customer_id: subscription.customer || null,
+    subscription_id: subscription.id,
+    status: mapStatus(subscription.status),
+    current_period_end: periodEndFrom(subscription),
+  })
+}
 
 if (isProduction) {
   app.get('/privacy', (_req, res) => {
@@ -922,6 +917,6 @@ app.listen(PORT, async () => {
   console.log(`  Research: ${process.env.TAVILY_API_KEY ? '✓ Tavily' : '○ DuckDuckGo fallback (set TAVILY_API_KEY for better results)'}`)
   console.log(`  Image gen: ${process.env.OPENAI_API_KEY ? '✓ GPT Image (gpt-image-1)' : process.env.GOOGLE_API_KEY ? '✓ Gemini Imagen' : process.env.REPLICATE_API_KEY ? '✓ Flux Pro' : '○ PubChem + web photos only (add OPENAI_API_KEY for best quality)'}`)
   console.log(`  Cloud sync: ${isSupabaseConfigured() ? '✓ Supabase (state + assets)' : '○ localStorage only (set SUPABASE_URL + SUPABASE_SECRET_KEY)'}`)
-  console.log(`  Billing: ${isPayPalConfigured() ? '✓ PayPal free-trial paywall enabled' : '○ open access (set PAYPAL_CLIENT_ID + PAYPAL_SECRET + PAYPAL_PLAN_ID to enable)'}`)
+  console.log(`  Billing: ${isStripeConfigured() ? '✓ Stripe free-trial paywall enabled' : '○ open access (set STRIPE_SECRET_KEY + STRIPE_PRICE_ID to enable)'}`)
   if (!isProduction) console.log(`\n  Frontend: http://localhost:5173\n`)
 })

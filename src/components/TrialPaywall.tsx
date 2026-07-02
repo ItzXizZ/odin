@@ -1,95 +1,30 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { useAuth } from '../lib/auth'
-import {
-  activateSubscription,
-  fetchPayPalConfig,
-  loadPayPalSdk,
-} from '../lib/subscription'
+import { createCheckoutSession } from '../lib/subscription'
 import logo from './logo.png'
 
-/** Minimal shape of the PayPal Buttons API we use. */
-interface PayPalButtons {
-  Buttons: (opts: {
-    style?: Record<string, unknown>
-    createSubscription: (
-      data: unknown,
-      actions: { subscription: { create: (payload: Record<string, unknown>) => Promise<string> } }
-    ) => Promise<string>
-    onApprove: (data: { subscriptionID?: string }) => Promise<void> | void
-    onError?: (err: unknown) => void
-    onCancel?: () => void
-  }) => { render: (selector: string | HTMLElement) => Promise<void> }
-}
-
 /**
- * Shown to a signed-in user who hasn't started their trial. Collects a card via
- * PayPal (which starts the free trial and auto-charges when it ends), then hands
- * control back to the app once the subscription is active.
+ * Shown to a signed-in user who hasn't started their trial. Sends them to
+ * Stripe's hosted Checkout, which collects a card (required up front), starts
+ * the free trial, and auto-charges when the trial ends.
  */
-export default function TrialPaywall({ onActivated }: { onActivated: () => void }) {
-  const { user, signOut } = useAuth()
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const [loading, setLoading] = useState(true)
+export default function TrialPaywall() {
+  const { signOut } = useAuth()
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [activating, setActivating] = useState(false)
 
-  useEffect(() => {
-    let cancelled = false
-
-    async function init() {
-      try {
-        const config = await fetchPayPalConfig()
-        if (!config.configured || !config.clientId || !config.planId) {
-          throw new Error('Billing is not configured yet. Please try again shortly.')
-        }
-        const paypal = (await loadPayPalSdk(config.clientId)) as PayPalButtons
-        if (cancelled || !containerRef.current) return
-
-        containerRef.current.innerHTML = ''
-        await paypal
-          .Buttons({
-            style: { layout: 'vertical', shape: 'pill', color: 'gold', label: 'subscribe' },
-            createSubscription: (_data, actions) =>
-              actions.subscription.create({
-                plan_id: config.planId as string,
-                // Echoed back on webhooks so we can map to this user.
-                custom_id: user?.id,
-              }),
-            onApprove: async (data) => {
-              if (!data.subscriptionID) {
-                setError('Subscription could not be confirmed. Please try again.')
-                return
-              }
-              setActivating(true)
-              try {
-                const status = await activateSubscription(data.subscriptionID)
-                if (status.active) onActivated()
-                else setError('Your subscription is pending. Give it a moment and refresh.')
-              } catch (e) {
-                setError(e instanceof Error ? e.message : 'Activation failed.')
-              } finally {
-                setActivating(false)
-              }
-            },
-            onError: () => setError('Something went wrong with PayPal. Please try again.'),
-          })
-          .render(containerRef.current)
-
-        if (!cancelled) setLoading(false)
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : 'Could not start checkout.')
-          setLoading(false)
-        }
-      }
+  async function handleStart() {
+    setBusy(true)
+    setError(null)
+    try {
+      const url = await createCheckoutSession()
+      window.location.href = url
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start checkout.')
+      setBusy(false)
     }
-
-    void init()
-    return () => {
-      cancelled = true
-    }
-  }, [user?.id, onActivated])
+  }
 
   return (
     <div
@@ -135,26 +70,38 @@ export default function TrialPaywall({ onActivated }: { onActivated: () => void 
           and you can cancel anytime before it ends.
         </p>
 
-        <div style={{ marginTop: 26, width: '100%', minHeight: 52 }}>
-          {loading && (
-            <div style={{ fontSize: 13, color: 'rgba(60,60,60,0.6)' }}>
-              Loading secure checkout…
-            </div>
-          )}
-          {activating && (
-            <div style={{ fontSize: 13, color: 'rgba(60,60,60,0.6)' }}>
-              Confirming your subscription…
-            </div>
-          )}
-          <div ref={containerRef} />
-        </div>
+        <button
+          onClick={handleStart}
+          disabled={busy}
+          style={{
+            marginTop: 26,
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '13px 16px',
+            borderRadius: 12,
+            background: busy ? 'rgba(30,30,30,0.55)' : 'rgba(30,30,30,0.92)',
+            border: 'none',
+            cursor: busy ? 'default' : 'pointer',
+            fontSize: 15,
+            fontWeight: 600,
+            color: '#fff',
+            transition: 'transform 0.12s ease, background 0.12s ease',
+          }}
+          onMouseDown={(e) => (e.currentTarget.style.transform = 'scale(0.98)')}
+          onMouseUp={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+          onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+        >
+          {busy ? 'Opening secure checkout…' : 'Start free trial'}
+        </button>
 
         {error && (
           <p style={{ marginTop: 14, fontSize: 13, color: 'rgba(170,40,40,0.95)' }}>{error}</p>
         )}
 
         <p style={{ marginTop: 20, fontSize: 12, color: 'rgba(60,60,60,0.5)' }}>
-          Payments are processed securely by PayPal. Your card details never touch our servers.
+          Payments are processed securely by Stripe. Your card details never touch our servers.
         </p>
 
         <button

@@ -29,7 +29,6 @@ import {
   oauthSignupCompleteUrl,
   trackSignupConversion,
 } from './oauthRedirect'
-import { notifySignupComplete } from './signupNotify'
 
 interface AuthState {
   /** Whether Google auth is configured (and therefore a login is required). */
@@ -136,7 +135,6 @@ export function SignupCompleteHandler() {
     if (!ready || !isSignupCompleteLanding()) return
     if (user) {
       trackSignupConversion(user)
-      void notifySignupComplete(user)
     }
     clearSignupCompleteLandingUrl()
   }, [ready, user])

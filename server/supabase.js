@@ -135,17 +135,17 @@ export async function getSubscription(userId) {
   return data
 }
 
-/** Look up a subscription row by its PayPal subscription id (used by webhooks). */
-export async function getSubscriptionByPaypalId(paypalSubscriptionId) {
+/** Look up a subscription row by its provider subscription id (used by webhooks). */
+export async function getSubscriptionBySubId(subscriptionId) {
   const supabase = getClient()
-  if (!supabase || !paypalSubscriptionId) return null
+  if (!supabase || !subscriptionId) return null
   const { data, error } = await supabase
     .from(SUBSCRIPTIONS_TABLE)
     .select('*')
-    .eq('paypal_subscription_id', paypalSubscriptionId)
+    .eq('subscription_id', subscriptionId)
     .maybeSingle()
   if (error) {
-    console.warn('[supabase] getSubscriptionByPaypalId failed:', error.message)
+    console.warn('[supabase] getSubscriptionBySubId failed:', error.message)
     return null
   }
   return data

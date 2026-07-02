@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import Layout from './components/Layout'
 import LoginScreen from './components/LoginScreen'
@@ -254,17 +254,40 @@ function TutorialCompleteScreen({
 function EntitledApp() {
   const [state, setState] = useState<'checking' | 'entitled' | 'paywall'>('checking')
 
-  const check = useCallback(async () => {
-    const status = await fetchSubscriptionStatus()
-    setState(status.active ? 'entitled' : 'paywall')
+  useEffect(() => {
+    let cancelled = false
+    const returned = new URLSearchParams(window.location.search).get('checkout')
+
+    const cleanUrl = () => {
+      if (returned) window.history.replaceState({}, '', '/')
+    }
+
+    async function resolveEntitlement() {
+      // On return from Stripe the webhook may lag a moment, so poll briefly.
+      const attempts = returned === 'success' ? 6 : 1
+      for (let i = 0; i < attempts; i++) {
+        const status = await fetchSubscriptionStatus()
+        if (cancelled) return
+        if (status.active) {
+          cleanUrl()
+          setState('entitled')
+          return
+        }
+        if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1500))
+      }
+      if (cancelled) return
+      cleanUrl()
+      setState('paywall')
+    }
+
+    void resolveEntitlement()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  useEffect(() => {
-    void check()
-  }, [check])
-
   if (state === 'checking') return <Splash />
-  if (state === 'paywall') return <TrialPaywall onActivated={() => setState('entitled')} />
+  if (state === 'paywall') return <TrialPaywall />
 
   return (
     <>
