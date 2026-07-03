@@ -1,18 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useAuth } from '../lib/auth'
-import { createCheckoutSession } from '../lib/subscription'
+import { createCheckoutSession, fetchSubscriptionStatus } from '../lib/subscription'
 import logo from './logo.png'
 
 /**
- * Shown to a signed-in user who hasn't started their trial. Sends them to
- * Stripe's hosted Checkout, which collects a card (required up front), starts
- * the free trial, and auto-charges when the trial ends.
+ * Shown to a signed-in user without an active subscription. Sends them to
+ * Stripe's hosted Checkout to subscribe (with an optional free trial when
+ * STRIPE_FREE_TRIAL_ENABLED is set on the server).
  */
 export default function TrialPaywall() {
   const { signOut } = useAuth()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [freeTrialEnabled, setFreeTrialEnabled] = useState(false)
+
+  useEffect(() => {
+    fetchSubscriptionStatus().then((s) => setFreeTrialEnabled(!!s.freeTrialEnabled))
+  }, [])
 
   async function handleStart() {
     setBusy(true)
@@ -25,6 +30,12 @@ export default function TrialPaywall() {
       setBusy(false)
     }
   }
+
+  const title = freeTrialEnabled ? 'Start your free trial' : 'Subscribe to Odin'
+  const description = freeTrialEnabled
+    ? "Add a card to unlock your studio. You won't be charged during the trial, and you can cancel anytime before it ends."
+    : 'Add a card to unlock your studio. You can cancel anytime from Settings.'
+  const cta = freeTrialEnabled ? 'Start free trial' : 'Subscribe'
 
   return (
     <div
@@ -56,7 +67,7 @@ export default function TrialPaywall() {
             letterSpacing: '-0.02em',
           }}
         >
-          Start your free trial
+          {title}
         </h1>
         <p
           style={{
@@ -66,8 +77,7 @@ export default function TrialPaywall() {
             color: 'rgba(60,60,60,0.72)',
           }}
         >
-          Add a card to unlock your studio. You won't be charged during the trial,
-          and you can cancel anytime before it ends.
+          {description}
         </p>
 
         <button
@@ -93,7 +103,7 @@ export default function TrialPaywall() {
           onMouseUp={(e) => (e.currentTarget.style.transform = 'scale(1)')}
           onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
         >
-          {busy ? 'Opening secure checkout…' : 'Start free trial'}
+          {busy ? 'Opening secure checkout…' : cta}
         </button>
 
         {error && (

@@ -14,6 +14,8 @@ export interface SubscriptionStatus {
   currentPeriodEnd?: string | null
   /** False when Stripe billing isn't configured (dev/local) — the gate is skipped. */
   billingEnabled: boolean
+  /** Whether checkout includes a free trial (STRIPE_FREE_TRIAL_ENABLED). */
+  freeTrialEnabled?: boolean
   /** True when the session is invalid/expired (e.g. the user was deleted). */
   unauthorized?: boolean
 }

@@ -21,7 +21,19 @@ function cfg() {
     priceId: process.env.STRIPE_PRICE_ID,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
     trialDays: Number(process.env.STRIPE_TRIAL_DAYS || 7),
+    freeTrialEnabled: parseEnvBool(process.env.STRIPE_FREE_TRIAL_ENABLED, false),
   }
+}
+
+function parseEnvBool(value, defaultValue) {
+  if (value === undefined || value === null || value === '') return defaultValue
+  const v = String(value).trim().toLowerCase()
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on'
+}
+
+/** Whether checkout should include a free trial period (STRIPE_FREE_TRIAL_ENABLED). */
+export function isFreeTrialEnabled() {
+  return cfg().freeTrialEnabled
 }
 
 let stripeClient = null
@@ -41,24 +53,26 @@ export function isStripeConfigured() {
 }
 
 /**
- * Create a hosted Checkout Session for the card-required free trial and return
- * its URL. Reuses/creates a Stripe customer keyed to the Supabase user id.
+ * Create a hosted Checkout Session and return its URL. When STRIPE_FREE_TRIAL_ENABLED
+ * is true, a trial period is applied; otherwise the user is charged immediately.
  */
 export async function createCheckoutSession({ userId, email, origin }) {
   const stripe = getStripe()
   if (!stripe) throw new Error('Stripe not configured')
-  const { priceId, trialDays } = cfg()
+  const { priceId, trialDays, freeTrialEnabled } = cfg()
+
+  const subscriptionData = {
+    metadata: { user_id: userId },
+  }
+  if (freeTrialEnabled) {
+    subscriptionData.trial_period_days = trialDays
+  }
 
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     line_items: [{ price: priceId, quantity: 1 }],
-    // Force the card to be collected even though the trial charges $0 now.
     payment_method_collection: 'always',
-    subscription_data: {
-      trial_period_days: trialDays,
-      // Echoed onto the subscription so webhooks can map back to our user.
-      metadata: { user_id: userId },
-    },
+    subscription_data: subscriptionData,
     // Also on the session/customer for lookups.
     client_reference_id: userId,
     customer_email: email || undefined,

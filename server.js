@@ -21,6 +21,7 @@ import {
 } from './server/supabase.js'
 import {
   isStripeConfigured,
+  isFreeTrialEnabled,
   createCheckoutSession,
   getCheckoutSession,
   createBillingPortalSession,
@@ -127,7 +128,7 @@ async function requireActiveSubscription(req) {
 
   const sub = await getSubscription(user.id)
   if (subscriptionIsActive(sub)) return { ok: true, userId: user.id }
-  return { ok: false, status: 402, error: 'A free trial or subscription is required.' }
+  return { ok: false, status: 402, error: 'An active subscription is required.' }
 }
 
 // Health check
@@ -815,7 +816,12 @@ app.post('/api/storage/upload', async (req, res) => {
 app.get('/api/subscription', async (req, res) => {
   // Billing off → treat everyone as entitled so local/dev isn't gated.
   if (!isStripeConfigured() || !isSupabaseConfigured()) {
-    return res.json({ active: true, status: 'unconfigured', billingEnabled: false })
+    return res.json({
+      active: true,
+      status: 'unconfigured',
+      billingEnabled: false,
+      freeTrialEnabled: false,
+    })
   }
   const { userId, error } = await resolveUserId(req)
   if (error) return res.status(401).json({ error })
@@ -826,6 +832,7 @@ app.get('/api/subscription', async (req, res) => {
       status: sub?.status || 'none',
       currentPeriodEnd: sub?.current_period_end || null,
       billingEnabled: true,
+      freeTrialEnabled: isFreeTrialEnabled(),
     })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -969,6 +976,12 @@ app.listen(PORT, async () => {
   console.log(`  Research: ${process.env.TAVILY_API_KEY ? '✓ Tavily' : '○ DuckDuckGo fallback (set TAVILY_API_KEY for better results)'}`)
   console.log(`  Image gen: ${process.env.OPENAI_API_KEY ? '✓ GPT Image (gpt-image-1)' : process.env.GOOGLE_API_KEY ? '✓ Gemini Imagen' : process.env.REPLICATE_API_KEY ? '✓ Flux Pro' : '○ PubChem + web photos only (add OPENAI_API_KEY for best quality)'}`)
   console.log(`  Cloud sync: ${isSupabaseConfigured() ? '✓ Supabase (state + assets)' : '○ localStorage only (set SUPABASE_URL + SUPABASE_SECRET_KEY)'}`)
-  console.log(`  Billing: ${isStripeConfigured() ? '✓ Stripe free-trial paywall enabled' : '○ open access (set STRIPE_SECRET_KEY + STRIPE_PRICE_ID to enable)'}`)
+  console.log(
+    `  Billing: ${
+      isStripeConfigured()
+        ? `✓ Stripe paywall enabled${isFreeTrialEnabled() ? ' (with free trial)' : ''}`
+        : '○ open access (set STRIPE_SECRET_KEY + STRIPE_PRICE_ID to enable)'
+    }`
+  )
   if (!isProduction) console.log(`\n  Frontend: http://localhost:5173\n`)
 })
