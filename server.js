@@ -21,6 +21,7 @@ import {
 } from './server/supabase.js'
 import {
   isStripeConfigured,
+  isPaywallEnabled,
   isFreeTrialEnabled,
   createCheckoutSession,
   getCheckoutSession,
@@ -116,8 +117,8 @@ function subscriptionIsActive(sub) {
  * Returns { ok: true } to proceed, or { ok: false, status, error } to reject.
  */
 async function requireActiveSubscription(req) {
-  // Billing not set up (local/dev) → don't gate anything.
-  if (!isStripeConfigured() || !isSupabaseConfigured()) return { ok: true }
+  // Billing not set up, or paywall explicitly disabled → don't gate anything.
+  if (!isPaywallEnabled() || !isSupabaseConfigured()) return { ok: true }
 
   const header = req.headers['authorization'] || ''
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null
@@ -814,11 +815,11 @@ app.post('/api/storage/upload', async (req, res) => {
 
 // Current user's subscription status. Used by the frontend paywall gate.
 app.get('/api/subscription', async (req, res) => {
-  // Billing off → treat everyone as entitled so local/dev isn't gated.
-  if (!isStripeConfigured() || !isSupabaseConfigured()) {
+  // Paywall off → treat everyone as entitled (tutorial → sign-up → free use).
+  if (!isPaywallEnabled() || !isSupabaseConfigured()) {
     return res.json({
       active: true,
-      status: 'unconfigured',
+      status: isPaywallEnabled() ? 'unconfigured' : 'open',
       billingEnabled: false,
       freeTrialEnabled: false,
     })
@@ -978,9 +979,11 @@ app.listen(PORT, async () => {
   console.log(`  Cloud sync: ${isSupabaseConfigured() ? '✓ Supabase (state + assets)' : '○ localStorage only (set SUPABASE_URL + SUPABASE_SECRET_KEY)'}`)
   console.log(
     `  Billing: ${
-      isStripeConfigured()
+      isPaywallEnabled()
         ? `✓ Stripe paywall enabled${isFreeTrialEnabled() ? ' (with free trial)' : ''}`
-        : '○ open access (set STRIPE_SECRET_KEY + STRIPE_PRICE_ID to enable)'
+        : isStripeConfigured()
+          ? '○ open access (set STRIPE_PAYWALL_ENABLED=true to require subscription)'
+          : '○ open access (set STRIPE_SECRET_KEY + STRIPE_PRICE_ID to enable billing)'
     }`
   )
   if (!isProduction) console.log(`\n  Frontend: http://localhost:5173\n`)

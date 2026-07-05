@@ -53,6 +53,16 @@ export function isStripeConfigured() {
 }
 
 /**
+ * Whether signed-in users must subscribe (or start a card trial) before using
+ * the studio. Stripe can stay configured for optional billing while the paywall
+ * is off — set STRIPE_PAYWALL_ENABLED=true to require payment again.
+ */
+export function isPaywallEnabled() {
+  if (!isStripeConfigured()) return false
+  return parseEnvBool(process.env.STRIPE_PAYWALL_ENABLED, false)
+}
+
+/**
  * Create a hosted Checkout Session and return its URL. When STRIPE_FREE_TRIAL_ENABLED
  * is true, a trial period is applied; otherwise the user is charged immediately.
  */

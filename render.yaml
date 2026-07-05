@@ -8,3 +8,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Keep the app free after sign-up; set true to require Stripe subscription.
+      - key: STRIPE_PAYWALL_ENABLED
+        value: "false"

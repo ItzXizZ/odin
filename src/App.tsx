@@ -248,9 +248,9 @@ function TutorialCompleteScreen({
 }
 
 /**
- * Signed-in gate: a new user must start their card-required free trial before
- * reaching the studio. Fails open (renders the app) whenever billing is off or
- * the status check errors, so a real subscriber is never locked out.
+ * Signed-in gate: when STRIPE_PAYWALL_ENABLED is on, new users must subscribe
+ * (or start a card trial) before reaching the studio. Fails open whenever billing
+ * is off or the status check errors, so a real subscriber is never locked out.
  */
 function EntitledApp() {
   const { signOut } = useAuth()
@@ -289,9 +289,9 @@ function EntitledApp() {
           void signOut()
           return
         }
-        if (status.active) {
+        if (status.active || !status.billingEnabled) {
           // Only count as a conversion when they just returned from checkout.
-          if (returned === 'success') trackTrialConversion()
+          if (returned === 'success' && status.billingEnabled) trackTrialConversion()
           cleanUrl()
           setState('entitled')
           return
