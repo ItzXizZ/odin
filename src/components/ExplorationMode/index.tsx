@@ -19,6 +19,7 @@ import { Plus, Trash2, Sparkles, Maximize2, ChevronLeft, RefreshCw, Loader2 } fr
 import { nanoid } from 'nanoid'
 import { useStore, useHasApiKey, hasUsableKey, type ExplorationNodeData } from '../../store/useStore'
 import { streamChat, syncChat } from '../../lib/claude'
+import { sanitizeAiProse } from '../../lib/aiText'
 import {
   registerOnboardingCommand,
   getOnboardingTopic,
@@ -939,9 +940,10 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         apiKey,
         (chunk) => {
           retryResponse += chunk
+          const cleaned = sanitizeAiProse(retryResponse)
           setNodes((prev) =>
             prev.map((n) =>
-              n.id === nodeId ? { ...n, data: { ...n.data, response: retryResponse, isLoading: true } } : n
+              n.id === nodeId ? { ...n, data: { ...n.data, response: cleaned, isLoading: true } } : n
             )
           )
         },
@@ -949,12 +951,12 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
           setNodes((prev) => {
             const updated = prev.map((n) => {
               if (n.id !== nodeId) return n
-              const cited = extractSourcesFromText(retryResponse)
+              const cited = extractSourcesFromText(sanitizeAiProse(retryResponse))
               return {
                 ...n,
                 data: {
                   ...n.data,
-                  response: retryResponse,
+                  response: sanitizeAiProse(retryResponse),
                   isLoading: false,
                   sources: mergeSources(n.data.sources ?? researchSources, cited),
                 },
@@ -1428,9 +1430,10 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
         (chunk) => {
           if (isStaleBoard()) return
           response += chunk
+          const cleaned = sanitizeAiProse(response)
           setNodes((prev) =>
             prev.map((n) =>
-              n.id === id ? { ...n, data: { ...n.data, response, isLoading: true } } : n
+              n.id === id ? { ...n, data: { ...n.data, response: cleaned, isLoading: true } } : n
             )
           )
         },
@@ -1439,12 +1442,12 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
           setNodes((prev) => {
             const updated = prev.map((n) => {
               if (n.id !== id) return n
-              const cited = extractSourcesFromText(response)
+              const cited = extractSourcesFromText(sanitizeAiProse(response))
               return {
                 ...n,
                 data: {
                   ...n.data,
-                  response,
+                  response: sanitizeAiProse(response),
                   isLoading: false,
                   sources: mergeSources(n.data.sources ?? researchSources, cited),
                 },

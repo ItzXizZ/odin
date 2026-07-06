@@ -8,6 +8,8 @@ import remarkMath from 'remark-math'
 
 import rehypeKatex from 'rehype-katex'
 
+import { repairMarkdownLineBreaks } from '../lib/aiText'
+
 
 
 interface MarkdownProps {
@@ -158,7 +160,7 @@ function MarkdownImpl({ children, className = '', size = 'text-sm', onLinkClick 
 
       >
 
-        {normalizeMath(children)}
+        {normalizeMath(repairMarkdownLineBreaks(children))}
 
       </ReactMarkdown>
 

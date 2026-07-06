@@ -17,6 +17,7 @@ import { nanoid } from 'nanoid'
 import { useStore, useHasApiKey } from '../../store/useStore'
 import type { Adventure } from '../../store/useStore'
 import { uploadPDF, syncChat } from '../../lib/claude'
+import { sanitizeAiProse } from '../../lib/aiText'
 import { compressImageToDataUrl } from '../../lib/image'
 import { renderPDFThumbnail } from '../../lib/pdfThumbnail'
 import { uploadAsset } from '../../lib/cloud'
@@ -281,7 +282,7 @@ export default function ContextHouse({ onClose }: { onClose?: () => void }) {
             apiKey,
             256
           ).catch(() => '')
-          if (summary) updatePDFSummary(id, summary)
+          if (summary) updatePDFSummary(id, sanitizeAiProse(summary))
         }
       } catch (err) {
         console.error('PDF upload failed:', err)

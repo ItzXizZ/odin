@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, type CSSProperties } from 'react'
 import { useEditor, EditorContent, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -8,13 +8,14 @@ import TextAlign from '@tiptap/extension-text-align'
 import {
   Bold, Italic, UnderlineIcon, AlignLeft, AlignCenter, AlignRight,
   Check, X, Loader2, Undo2, Redo2, Crosshair,
-  Plus, PanelRightClose, PanelRightOpen, LayoutGrid, Inbox, Send,
+  Plus, PanelRightClose, PanelRightOpen, LayoutGrid, Inbox, Send, ChevronDown,
 } from 'lucide-react'
 import { diffWords } from 'diff'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useStore, useHasApiKey } from '../../store/useStore'
 import { streamChat } from '../../lib/claude'
-import { compileStyleGuide, buildAgentSystemPrompt, parseEditResponse, parseAgentResponse, parseDraftResponse, applyEdits, type ParsedEdit } from '../../lib/style'
+import { compileStyleGuide, parseEditResponse, parseAgentResponse, parseDraftResponse, applyEdits, type ParsedEdit } from '../../lib/style'
+import { createAgentStreamParser, buildAgentStreamSystemPrompt } from '../../lib/agentStream'
 import {
   runStyleAgentTurn,
   runConflictResolutionTurn,
@@ -30,15 +31,17 @@ import {
   looksLikeJsonResponse,
   markdownishToHtml,
 } from '../../lib/aiText'
-import { diffToHtml } from './diffHtml'
-import TunnelVision from './TunnelVision'
+import { diffToHtml, diffToInlineHtml } from './diffHtml'
+import RefinePanel from './TunnelVision'
 import DocumentsMode from '../DocumentsMode'
 import ContextHouse from '../ContextHouse'
+import ComposeContextDock from './ComposeContextDock'
 import {
   ensureTabChatState,
   createChatThread,
   type WriteChatMessage,
   type WriteChatThread,
+  type AgentActivityStep,
 } from './chatThreads'
 import { subscribeWorkspaceSaveStatus, type WorkspaceSaveStatus } from '../../lib/workspaceStorage'
 import { registerOnboardingCommand } from '../../lib/onboarding'
@@ -65,6 +68,53 @@ function InlineMd({ text }: { text: string }) {
         return <span key={i}>{part}</span>
       })}
     </span>
+  )
+}
+
+/** Collapsed work-log for agent steps — expands on demand, auto-opens while streaming. */
+function ActivityStepsDropdown({ steps }: { steps: AgentActivityStep[] }) {
+  const isLive = steps.some((s) => s.status === 'running')
+  const [open, setOpen] = useState(isLive)
+
+  useEffect(() => {
+    if (isLive) setOpen(true)
+    else setOpen(false)
+  }, [isLive])
+
+  if (steps.length === 0) return null
+
+  return (
+    <div className="agent-steps-dropdown">
+      <button
+        type="button"
+        className="agent-steps-toggle"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <ChevronDown
+          size={10}
+          className={`agent-steps-chevron${open ? ' is-open' : ''}`}
+        />
+        <span>
+          {steps.length} step{steps.length === 1 ? '' : 's'}
+          {isLive ? '…' : ''}
+        </span>
+      </button>
+      {open && (
+        <div className="agent-steps">
+          {steps.map((step) => (
+            <div key={step.id} className={`agent-step agent-step--${step.status}`}>
+              {step.status === 'running' ? (
+                <Loader2 size={10} className="animate-spin flex-shrink-0" />
+              ) : (
+                <Check size={10} className="flex-shrink-0 text-emerald-600/80" />
+              )}
+              <span>{step.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -205,6 +255,7 @@ function clearReferenceHighlightIn(ed: Editor) {
 
 export default function WriteMode() {
   const {
+    activeTab: appTab,
     documents, activeDocumentId, apiKey, getFullContext,
     setDocumentContent, setDocumentTitle,
     addDocTab, deleteDocTab, renameDocTab, setActiveDocTab,
@@ -229,14 +280,19 @@ export default function WriteMode() {
   const [tunnel, setTunnel] = useState<TunnelState | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [assistantOpen, setAssistantOpen] = useState(true)
+  const [assistantWidth, setAssistantWidth] = useState(480)
+  const railDragRef = useRef<{ startX: number; startW: number; dragged: boolean } | null>(null)
   const [showDocLibrary, setShowDocLibrary] = useState(false)
   const [showContextHouse, setShowContextHouse] = useState(false)
+  /** Compose-only floating UI (tabs, dock, assistant, review bar). */
+  const composeChromeVisible = appTab === 'write' && !showDocLibrary && !showContextHouse
   const [renamingTab, setRenamingTab] = useState<{ id: string; value: string } | null>(null)
   const [saveStatus, setSaveStatus] = useState<WorkspaceSaveStatus>('idle')
 
   const skipEmptySaveRef = useRef(true)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
+  const editorScrollRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<Editor | null>(null)
   const reviewActiveRef = useRef(false)
   const reviewStateRef = useRef<ReviewState | null>(null)
@@ -274,7 +330,7 @@ export default function WriteMode() {
       updateActiveTabChat({ chatThreads: threads, activeChatThreadId: threadId })
       const thread = threads.find((t) => t.id === threadId)
       const ed = editorRef.current
-      if (ed && !reviewActiveRef.current) {
+      if (ed) {
         if (thread?.passage) highlightPassageInEditor(ed, thread)
         else clearReferenceHighlightIn(ed)
       }
@@ -326,7 +382,6 @@ export default function WriteMode() {
     if (!hydrated) return
     if (documents.length > 0) return
     setShowContextHouse(false)
-    setAssistantOpen(false)
     setShowDocLibrary(true)
   }, [hydrated, documents.length])
 
@@ -356,6 +411,18 @@ export default function WriteMode() {
       el.style.overflowY = 'hidden'
     }
   }, [])
+
+  const focusAssistantInput = useCallback(() => {
+    setAssistantOpen(true)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = promptRef.current
+        if (!el) return
+        el.focus()
+        syncPromptHeight()
+      })
+    })
+  }, [syncPromptHeight])
 
   useEffect(() => {
     syncPromptHeight()
@@ -450,7 +517,7 @@ export default function WriteMode() {
   useEffect(() => {
     if (!editor) return
     const update = () => {
-      if (reviewActiveRef.current || !editor.isEditable) {
+      if (!editor.isEditable && !reviewActiveRef.current) {
         setSelectionMenu(null)
         return
       }
@@ -485,8 +552,8 @@ export default function WriteMode() {
   }, [editor])
 
   useEffect(() => {
-    if (showDocLibrary || showContextHouse) setSelectionMenu(null)
-  }, [showDocLibrary, showContextHouse])
+    if (showDocLibrary || showContextHouse || tunnel) setSelectionMenu(null)
+  }, [showDocLibrary, showContextHouse, tunnel])
 
   /* ── Attachment reference highlight ──
      When a passage is attached to the assistant, it stays visibly highlighted
@@ -494,20 +561,41 @@ export default function WriteMode() {
   const attachSelection = useCallback((text: string, from?: number, to?: number) => {
     const tab = useStore.getState().getActiveTab()
     const { threads, activeId } = ensureTabChatState(tab)
+    const trimmed = text.trim()
+    if (!trimmed) return
+
+    if (reviewActiveRef.current) {
+      const newThread = createChatThread(threads)
+      const passageThread: WriteChatThread = {
+        ...newThread,
+        label: trimmed.length > 26 ? `${trimmed.slice(0, 26)}…` : trimmed,
+        passage: trimmed,
+        passageFrom: from,
+        passageTo: to,
+        updatedAt: Date.now(),
+      }
+      updateActiveTabChat({
+        chatThreads: [...threads, passageThread],
+        activeChatThreadId: passageThread.id,
+      })
+      const ed = editorRef.current
+      if (ed) highlightPassageInEditor(ed, passageThread)
+      focusAssistantInput()
+      return
+    }
 
     const nextThreads = threads.map((t) =>
       t.id === activeId
-        ? { ...t, passage: text, passageFrom: from, passageTo: to, updatedAt: Date.now() }
+        ? { ...t, passage: trimmed, passageFrom: from, passageTo: to, updatedAt: Date.now() }
         : t
     )
     updateActiveTabChat({ chatThreads: nextThreads, activeChatThreadId: activeId })
 
     const ed = editorRef.current
     const thread = nextThreads.find((t) => t.id === activeId)
-    if (ed && thread && !reviewActiveRef.current) {
-      highlightPassageInEditor(ed, thread)
-    }
-  }, [updateActiveTabChat])
+    if (ed && thread) highlightPassageInEditor(ed, thread)
+    focusAssistantInput()
+  }, [updateActiveTabChat, focusAssistantInput])
 
   /* ── Finalize a review once all hunks are resolved ── */
   const finishReview = useCallback(() => {
@@ -581,6 +669,106 @@ export default function WriteMode() {
       updateActiveTabChat({ chatThreads: nextThreads, activeChatThreadId: activeId })
     },
     [updateActiveTabChat]
+  )
+
+  /** Localized diff review for a single passage (refine apply → inline accept/reject). */
+  const enterPassageReview = useCallback(
+    (from: number, to: number, originalText: string, newText: string, instruction: string) => {
+      const ed = editorRef.current
+      if (!ed) return
+      const cleaned = normalizeAiResponse(newText)
+      const proposed = looksLikeMarkdown(cleaned)
+        ? cleaned.replace(/<[^>]+>/g, '').trim()
+        : cleaned.trim()
+      if (!proposed || proposed === originalText.trim()) return
+
+      const diff = diffWords(originalText, proposed) as DiffChange[]
+      const inlineHtml = diffToInlineHtml(diff)
+      const id = (Date.now() + 1).toString()
+      const stackedIds = reviewActiveRef.current && reviewStateRef.current
+        ? [...reviewStateRef.current.stackedIds, id]
+        : [id]
+
+      reviewActiveRef.current = true
+      skipEmptySaveRef.current = true
+      ed.chain().focus().insertContentAt({ from, to }, inlineHtml).run()
+      skipEmptySaveRef.current = false
+      ed.setEditable(false)
+      ed.view.dispatch(ed.state.tr.setMeta('diff-refresh', true))
+
+      setSuggestions((prev) => [
+        { id, instruction, diff, accepted: null },
+        ...prev.slice(0, 9),
+      ])
+      setReview({ suggestionId: id, instruction, diff, stackedIds })
+
+      const tab = useStore.getState().getActiveTab()
+      const { threads, activeId } = ensureTabChatState(tab)
+      const nextThreads = threads.map((t) =>
+        t.id === activeId
+          ? {
+              ...t,
+              messages: [
+                ...t.messages,
+                {
+                  id,
+                  role: 'assistant' as const,
+                  content: 'Refinement ready — approve or decline each change inline in the document.',
+                  suggestionId: id,
+                },
+              ],
+              updatedAt: Date.now(),
+            }
+          : t
+      )
+      updateActiveTabChat({ chatThreads: nextThreads, activeChatThreadId: activeId })
+
+      requestAnimationFrame(() => {
+        try {
+          const coords = ed.view.coordsAtPos(from)
+          const scrollEl = editorScrollRef.current
+          if (scrollEl) {
+            const scrollRect = scrollEl.getBoundingClientRect()
+            const targetTop = scrollEl.scrollTop + coords.top - scrollRect.top - 80
+            scrollEl.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
+          }
+        } catch {
+          /* coords unavailable */
+        }
+      })
+    },
+    [updateActiveTabChat]
+  )
+
+  /** Refresh the diff view as streamed edits land one at a time. */
+  const updateProgressiveReview = useCallback(
+    (baseText: string, proposedText: string, instruction: string, reviewId: string, isFirst: boolean) => {
+      const ed = editorRef.current
+      if (!ed) return
+      const diff = diffWords(baseText, proposedText) as DiffChange[]
+      const html = diffToHtml(diff)
+
+      reviewActiveRef.current = true
+      skipEmptySaveRef.current = true
+      ed.commands.setContent(html, false)
+      skipEmptySaveRef.current = false
+      ed.setEditable(false)
+      ed.view.dispatch(ed.state.tr.setMeta('diff-refresh', true))
+
+      if (isFirst) {
+        setSuggestions((prev) => [
+          { id: reviewId, instruction, diff, accepted: null },
+          ...prev.slice(0, 9),
+        ])
+        setReview({ suggestionId: reviewId, instruction, diff, stackedIds: [reviewId] })
+      } else {
+        setSuggestions((prev) =>
+          prev.map((s) => (s.id === reviewId ? { ...s, diff } : s))
+        )
+        setReview((prev) => (prev ? { ...prev, diff } : prev))
+      }
+    },
+    []
   )
 
   const acceptAll = useCallback(() => {
@@ -724,20 +912,18 @@ export default function WriteMode() {
     if (typeof override !== 'string') setAiPrompt('')
     setIsStreaming(true)
 
-    // While a review is open, follow-up edits stack: the AI edits the proposed
-    // text, but the next diff is still shown against the original document.
-    const stacking = reviewActiveRef.current
-    const currentText = stacking
+    const passage = attachedSelection
+    const inReview = reviewActiveRef.current
+    const currentText = inReview
       ? reviewTextFromDoc(editor, 'proposed')
       : editor.getText({ blockSeparator: '\n\n' })
-    const baseText = stacking ? reviewTextFromDoc(editor, 'original') : currentText
+    const baseText = inReview ? reviewTextFromDoc(editor, 'original') : currentText
     const context = getFullContext()
     const styleGuide = compileStyleGuide(styleRules)
-    const passage = attachedSelection
     const isEmptyDoc = currentText.trim().length === 0
 
     const historyForApi = chatStateRef.current
-      .filter((m) => m.kind !== 'style' && m.id !== userEntryId)
+      .filter((m) => m.kind !== 'style' && m.kind !== 'agent' && m.id !== userEntryId)
       .slice(-10)
       .map((m) => ({ role: m.role, content: m.content }))
 
@@ -752,7 +938,7 @@ JSON safety: never put a literal newline inside a string value — use \\n if ne
 Write plain prose only in "content" — no Markdown symbols.
 
 ${styleGuide ? styleGuide + '\n\n' : ''}${context ? `=== WRITER'S RESEARCH CONTEXT ===\n${context.slice(0, 4000)}` : ''}`
-      : buildAgentSystemPrompt({
+      : buildAgentStreamSystemPrompt({
           context,
           styleGuide,
           scope: passage ? 'passage' : 'document',
@@ -771,165 +957,289 @@ ${
 }
 INSTRUCTION: ${instruction}`
 
+    const activityId = (Date.now() + 1).toString()
     let raw = ''
+    let steps: AgentActivityStep[] = []
+    let editsApplied = 0
+    let proposedText = currentText
+    let finalMessage = ''
+    let streamMode: 'edit' | 'chat' | 'create' | null = null
+    let reviewStarted = false
+
+    const upsertActivity = (content: string, extra?: Partial<WriteChatMessage>) => {
+      updateThreadMessages((prev) => {
+        const without = prev.filter((m) => m.id !== activityId)
+        return [
+          ...without,
+          {
+            id: activityId,
+            role: 'assistant' as const,
+            kind: 'agent' as const,
+            content,
+            activity: [...steps],
+            editsApplied,
+            ...extra,
+          },
+        ]
+      })
+    }
+
+    const pushStep = (text: string) => {
+      steps = [
+        ...steps.map((s) => ({ ...s, status: 'done' as const })),
+        { id: `step-${steps.length}`, text, status: 'running' as const },
+      ]
+      upsertActivity(finalMessage || text)
+    }
+
+    const finishSteps = () => {
+      steps = steps.map((s) => ({ ...s, status: 'done' as const }))
+    }
+
+    const parser = !isEmptyDoc
+      ? createAgentStreamParser((event) => {
+          if (event.type === 'step') {
+            pushStep(event.text)
+            return
+          }
+
+          if (event.type === 'edit') {
+            streamMode = 'edit'
+            const result = applyEdits(proposedText, [event.edit])
+            if (result.applied === 0) return
+            proposedText = result.text
+            editsApplied++
+            updateProgressiveReview(
+              baseText,
+              proposedText,
+              instruction,
+              activityId,
+              !reviewStarted
+            )
+            reviewStarted = true
+            if (event.note) {
+              const noteStep = steps.find((s) => s.status === 'running')
+              if (noteStep) noteStep.text = `${noteStep.text} — ${event.note}`
+            }
+            upsertActivity(
+              finalMessage || `Applying edit ${editsApplied}…`
+            )
+            return
+          }
+
+          if (event.type === 'create') {
+            streamMode = 'create'
+            let newText: string
+            if (passage) {
+              const passageIdx = currentText.indexOf(passage)
+              if (passageIdx !== -1) {
+                const insertPos = passageIdx + passage.length
+                newText =
+                  currentText.slice(0, insertPos) +
+                  '\n\n' +
+                  event.content +
+                  currentText.slice(insertPos)
+              } else {
+                newText = currentText + '\n\n' + event.content
+              }
+            } else {
+              newText = currentText + '\n\n' + event.content
+            }
+            proposedText = newText
+            editsApplied++
+            updateProgressiveReview(baseText, proposedText, instruction, activityId, !reviewStarted)
+            reviewStarted = true
+            upsertActivity(finalMessage || 'Drafting new content…')
+            return
+          }
+
+          if (event.type === 'message') {
+            finalMessage = event.text
+            upsertActivity(finalMessage)
+            return
+          }
+
+          if (event.type === 'chat') {
+            streamMode = 'chat'
+            finalMessage = event.text
+            finishSteps()
+            upsertActivity(finalMessage)
+          }
+        })
+      : null
+
+    const finalizeStream = () => {
+      setIsStreaming(false)
+      raw = normalizeAiResponse(raw)
+      finishSteps()
+
+      if (isEmptyDoc) {
+        const drafted = parseDraftResponse(raw)
+        if (!drafted?.content) {
+          updateThreadMessages((prev) => [
+            ...prev.filter((m) => m.id !== activityId),
+            {
+              id: (Date.now() + 2).toString(),
+              role: 'assistant',
+              content: looksLikeJsonResponse(raw)
+                ? "I couldn't read that draft cleanly — please try again."
+                : 'Nothing was generated — try again.',
+            },
+          ])
+          return
+        }
+        enterReview(baseText, drafted.content, instruction, drafted.message)
+        return
+      }
+
+      if (streamMode === 'chat') {
+        updateThreadMessages((prev) =>
+          prev.map((m) =>
+            m.id === activityId
+              ? { ...m, kind: undefined, content: finalMessage || m.content }
+              : m
+          )
+        )
+        return
+      }
+
+      if (reviewStarted && (streamMode === 'edit' || streamMode === 'create')) {
+        const message =
+          finalMessage?.trim() ||
+          (editsApplied > 0
+            ? `I've proposed ${editsApplied} revision${editsApplied === 1 ? '' : 's'}. Approve or decline each one at your discretion.`
+            : 'Here are the edits — accept or reject each one inline.')
+        updateThreadMessages((prev) =>
+          prev.map((m) =>
+            m.id === activityId
+              ? {
+                  ...m,
+                  kind: undefined,
+                  content: message,
+                  suggestionId: activityId,
+                  activity: steps,
+                }
+              : m
+          )
+        )
+        return
+      }
+
+      // Fallback: model didn't stream NDJSON — parse full response
+      const agentResp = parseAgentResponse(raw)
+      if (agentResp) {
+        if (agentResp.type === 'chat') {
+          updateThreadMessages((prev) => [
+            ...prev.filter((m) => m.id !== activityId),
+            { id: (Date.now() + 2).toString(), role: 'assistant', content: agentResp.message },
+          ])
+          return
+        }
+        if (agentResp.type === 'create') {
+          let newText: string
+          if (passage) {
+            const passageIdx = currentText.indexOf(passage)
+            if (passageIdx !== -1) {
+              const insertPos = passageIdx + passage.length
+              newText =
+                currentText.slice(0, insertPos) +
+                '\n\n' +
+                agentResp.content +
+                currentText.slice(insertPos)
+            } else {
+              newText = currentText + '\n\n' + agentResp.content
+            }
+          } else {
+            newText = currentText + '\n\n' + agentResp.content
+          }
+          enterReview(baseText, newText, instruction, agentResp.message)
+          return
+        }
+        if (agentResp.type === 'edit') {
+          if (agentResp.edits.length === 0) {
+            updateThreadMessages((prev) => [
+              ...prev.filter((m) => m.id !== activityId),
+              {
+                id: (Date.now() + 2).toString(),
+                role: 'assistant',
+                content: agentResp.message?.trim() || 'No changes needed — your text already works here.',
+              },
+            ])
+            return
+          }
+          const newText = applyEdits(currentText, agentResp.edits).text
+          if (!newText.trim() || newText.trim() === currentText.trim()) {
+            updateThreadMessages((prev) => [
+              ...prev.filter((m) => m.id !== activityId),
+              {
+                id: (Date.now() + 2).toString(),
+                role: 'assistant',
+                content: agentResp.message?.trim() || 'No changes needed — your text already works here.',
+              },
+            ])
+            return
+          }
+          enterReview(baseText, newText, instruction, agentResp.message, agentResp.edits)
+          return
+        }
+      }
+
+      const parsed = parseEditResponse(raw)
+      if (parsed) {
+        if (parsed.edits.length === 0) {
+          updateThreadMessages((prev) => [
+            ...prev.filter((m) => m.id !== activityId),
+            {
+              id: (Date.now() + 2).toString(),
+              role: 'assistant',
+              content: parsed.message?.trim() || 'No changes needed — your text already works here.',
+            },
+          ])
+          return
+        }
+        const newText = applyEdits(currentText, parsed.edits).text
+        if (newText.trim() && newText.trim() !== currentText.trim()) {
+          enterReview(baseText, newText, instruction, parsed.message, parsed.edits)
+          return
+        }
+      }
+
+      updateThreadMessages((prev) => [
+        ...prev.filter((m) => m.id !== activityId),
+        {
+          id: (Date.now() + 2).toString(),
+          role: 'assistant',
+          content: looksLikeJsonResponse(raw)
+            ? "I couldn't apply that cleanly — please try again."
+            : 'No changes needed — your text already works here.',
+        },
+      ])
+    }
+
+    if (!isEmptyDoc) {
+      pushStep('Reading your request')
+    }
+
     await streamChat(
       [...historyForApi, { role: 'user', content: user }],
       system,
       apiKey,
       (chunk) => {
         raw += chunk
+        parser?.feed(chunk)
       },
-      () => {
-        setIsStreaming(false)
-        raw = normalizeAiResponse(raw)
-
-        // Empty-doc draft path (unchanged).
-        if (isEmptyDoc) {
-          const drafted = parseDraftResponse(raw)
-          if (!drafted?.content) {
-            updateThreadMessages((prev) => [
-              ...prev,
-              {
-                id: (Date.now() + 1).toString(),
-                role: 'assistant',
-                content: looksLikeJsonResponse(raw)
-                  ? "I couldn't read that draft cleanly — please try again."
-                  : 'Nothing was generated — try again.',
-              },
-            ])
-            return
-          }
-          enterReview(baseText, drafted.content, instruction, drafted.message)
-          return
-        }
-
-        // Agentic path: parse type-discriminated response.
-        const agentResp = parseAgentResponse(raw)
-
-        if (agentResp) {
-          if (agentResp.type === 'chat') {
-            // Pure conversational reply — no doc changes.
-            updateThreadMessages((prev) => [
-              ...prev,
-              { id: (Date.now() + 1).toString(), role: 'assistant', content: agentResp.message },
-            ])
-            return
-          }
-
-          if (agentResp.type === 'create') {
-            // Generate new content and append it (or insert after selected passage).
-            let newText: string
-            if (passage) {
-              const passageIdx = currentText.indexOf(passage)
-              if (passageIdx !== -1) {
-                const insertPos = passageIdx + passage.length
-                newText = currentText.slice(0, insertPos) + '\n\n' + agentResp.content + currentText.slice(insertPos)
-              } else {
-                newText = currentText + '\n\n' + agentResp.content
-              }
-            } else {
-              newText = currentText + '\n\n' + agentResp.content
-            }
-            enterReview(baseText, newText, instruction, agentResp.message)
-            return
-          }
-
-          if (agentResp.type === 'edit') {
-            if (agentResp.edits.length === 0) {
-              updateThreadMessages((prev) => [
-                ...prev,
-                {
-                  id: (Date.now() + 1).toString(),
-                  role: 'assistant',
-                  content: agentResp.message?.trim() || 'No changes needed — your text already works here.',
-                },
-              ])
-              return
-            }
-            const newText = applyEdits(currentText, agentResp.edits).text
-            if (!newText.trim() || newText.trim() === currentText.trim()) {
-              updateThreadMessages((prev) => [
-                ...prev,
-                {
-                  id: (Date.now() + 1).toString(),
-                  role: 'assistant',
-                  content: agentResp.message?.trim() || 'No changes needed — your text already works here.',
-                },
-              ])
-              return
-            }
-            enterReview(baseText, newText, instruction, agentResp.message, agentResp.edits)
-            return
-          }
-        }
-
-        // Fallback: model didn't use the agentic protocol — try legacy edit parse,
-        // then treat raw output as a full replacement.
-        const parsed = parseEditResponse(raw)
-        let newText: string
-        let assistantMessage: string | undefined
-        let appliedEdits: ParsedEdit[] | undefined
-
-        if (parsed) {
-          assistantMessage = parsed.message
-          appliedEdits = parsed.edits
-          if (parsed.edits.length === 0) {
-            updateThreadMessages((prev) => [
-              ...prev,
-              {
-                id: (Date.now() + 1).toString(),
-                role: 'assistant',
-                content: parsed.message?.trim() || 'No changes needed — your text already works here.',
-              },
-            ])
-            return
-          }
-          newText = applyEdits(currentText, parsed.edits).text
-        } else {
-          const drafted = parseDraftResponse(raw)
-          if (drafted?.content) {
-            enterReview(baseText, drafted.content, instruction, drafted.message)
-            return
-          }
-          updateThreadMessages((prev) => [
-            ...prev,
-            {
-              id: (Date.now() + 1).toString(),
-              role: 'assistant',
-              content: looksLikeJsonResponse(raw)
-                ? "I couldn't apply that cleanly — please try again."
-                : 'No changes needed — your text already works here.',
-            },
-          ])
-          return
-        }
-
-        if (!newText.trim() || newText.trim() === currentText.trim()) {
-          updateThreadMessages((prev) => [
-            ...prev,
-            {
-              id: (Date.now() + 1).toString(),
-              role: 'assistant',
-              content: assistantMessage?.trim() || 'No changes needed — your text already works here.',
-            },
-          ])
-          return
-        }
-        enterReview(baseText, newText, instruction, assistantMessage, appliedEdits)
-      },
+      finalizeStream,
       (errMessage) => {
         setIsStreaming(false)
         updateThreadMessages((prev) => [
-          ...prev,
-          { id: (Date.now() + 1).toString(), role: 'assistant', content: `⚠️ ${errMessage}. Please try again.` },
+          ...prev.filter((m) => m.id !== activityId),
+          { id: (Date.now() + 2).toString(), role: 'assistant', content: `⚠️ ${errMessage}. Please try again.` },
         ])
       }
     )
 
-    // Background turn: let Claude decide if this was stylistic feedback and
-    // update the Stylism network (reinforce / create / flag conflicts).
     void maintainStyleNetwork(instruction)
-  }, [aiPrompt, apiKey, hasApiKey, editor, getFullContext, styleRules, attachedSelection, enterReview, maintainStyleNetwork, updateThreadMessages])
+  }, [aiPrompt, apiKey, hasApiKey, editor, getFullContext, styleRules, attachedSelection, enterReview, updateProgressiveReview, maintainStyleNetwork, updateThreadMessages])
 
   /* ── Onboarding command hooks ── */
   const handleAIAssistRef = useRef(handleAIAssist)
@@ -972,15 +1282,21 @@ INSTRUCTION: ${instruction}`
     }
   }, [])
 
-  /* ── Tunnel vision ── */
+  /* ── Inline refine mode ── */
+  const closeRefine = useCallback(() => {
+    setTunnel(null)
+  }, [])
+
   const openTunnel = useCallback(
     (from: number, to: number, text: string) => {
+      if (reviewActiveRef.current) return
       const ed = editorRef.current
       if (!ed) return
       const size = ed.state.doc.content.size
       const contextBefore = ed.state.doc.textBetween(Math.max(0, from - 400), from, ' ')
       const contextAfter = ed.state.doc.textBetween(to, Math.min(size, to + 400), ' ')
       setSelectionMenu(null)
+      setAssistantOpen(true)
       setTunnel({ sentence: text, contextBefore, contextAfter, from, to })
     },
     []
@@ -990,14 +1306,11 @@ INSTRUCTION: ${instruction}`
     (newText: string) => {
       const ed = editorRef.current
       if (!ed || !tunnel) return
-      const cleaned = normalizeAiResponse(newText)
-      const content = looksLikeMarkdown(cleaned) ? markdownishToHtml(cleaned) : cleaned
-      ed.chain().focus().insertContentAt({ from: tunnel.from, to: tunnel.to }, content).run()
-      setDocumentContent(ed.getHTML())
-      setWordCount(ed.getText().split(/\s+/).filter(Boolean).length)
+      const originalText = ed.state.doc.textBetween(tunnel.from, tunnel.to, ' ')
       setTunnel(null)
+      enterPassageReview(tunnel.from, tunnel.to, originalText, newText, 'Refine passage')
     },
-    [tunnel, setDocumentContent]
+    [tunnel, enterPassageReview]
   )
 
   /* ── Global keyboard ── */
@@ -1012,7 +1325,7 @@ INSTRUCTION: ${instruction}`
         return
       }
       if (e.key === 'Escape') {
-        if (tunnel) { setTunnel(null); return }
+        if (tunnel) { closeRefine(); return }
         if (showDocLibrary) { setShowDocLibrary(false); return }
         if (showContextHouse) { setShowContextHouse(false); return }
         if (reviewActiveRef.current) rejectAll()
@@ -1025,7 +1338,7 @@ INSTRUCTION: ${instruction}`
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [setDocumentContent, tunnel, acceptAll, rejectAll, showDocLibrary, showContextHouse])
+  }, [setDocumentContent, tunnel, closeRefine, acceptAll, rejectAll, showDocLibrary, showContextHouse])
 
   /* ── Drag selection into prompt ── */
   const handlePromptDrop = (e: React.DragEvent) => {
@@ -1071,6 +1384,202 @@ INSTRUCTION: ${instruction}`
     }
   }
 
+  const ASSISTANT_WIDTH_MIN = 400
+  const ASSISTANT_WIDTH_MAX = 560
+
+  const onRailPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    railDragRef.current = {
+      startX: e.clientX,
+      startW: assistantOpen ? assistantWidth : ASSISTANT_WIDTH_MIN,
+      dragged: false,
+    }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+
+  const onRailPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = railDragRef.current
+    if (!drag) return
+    const delta = drag.startX - e.clientX
+    if (Math.abs(delta) > 4) drag.dragged = true
+    if (!drag.dragged) return
+    if (!assistantOpen) setAssistantOpen(true)
+    setAssistantWidth(
+      Math.min(ASSISTANT_WIDTH_MAX, Math.max(ASSISTANT_WIDTH_MIN, drag.startW + delta))
+    )
+  }
+
+  const onRailPointerUp = () => {
+    const drag = railDragRef.current
+    railDragRef.current = null
+    if (drag && !drag.dragged) setAssistantOpen((v) => !v)
+  }
+
+  const writeModeStyle = {
+    '--assistant-rail-offset': assistantOpen
+      ? `calc(0.75rem + 12px + ${assistantWidth}px)`
+      : 'calc(0.75rem + 12px)',
+  } as CSSProperties
+
+  const assistantPanelInner = (
+    <>
+      {chatThreads.length > 0 && (
+        <div className="assistant-thread-bar">
+          {chatThreads.map((thread) => (
+            <div
+              key={thread.id}
+              role="tab"
+              aria-selected={thread.id === activeChatThreadId}
+              className={`assistant-thread-pill${thread.id === activeChatThreadId ? ' active' : ''}`}
+              onClick={() => switchChatThread(thread.id)}
+              title={
+                thread.passage
+                  ? `${thread.label} — focused on: ${thread.passage.slice(0, 120)}`
+                  : thread.label
+              }
+            >
+              <span className="assistant-thread-pill-label">{thread.label}</span>
+              <button
+                type="button"
+                className="assistant-thread-pill-close"
+                title="Delete chat"
+                aria-label={`Delete ${thread.label}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  deleteChatThread(thread.id)
+                }}
+              >
+                <X size={9} />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="assistant-thread-pill assistant-thread-pill-add"
+            onClick={() => {
+              const tab = useStore.getState().getActiveTab()
+              const { threads } = ensureTabChatState(tab)
+              const newThread = createChatThread(threads)
+              updateActiveTabChat({
+                chatThreads: [...threads, newThread],
+                activeChatThreadId: newThread.id,
+              })
+              const ed = editorRef.current
+              if (ed && !reviewActiveRef.current) clearReferenceHighlightIn(ed)
+            }}
+            title="New chat"
+          >
+            <Plus size={11} />
+          </button>
+        </div>
+      )}
+      <div className="flex-1 overflow-y-auto px-3 pt-3 pb-3 space-y-3 min-h-0">
+        {chat.map((entry) => {
+          const suggestion = entry.suggestionId
+            ? suggestions.find((s) => s.id === entry.suggestionId)
+            : undefined
+
+          return (
+            <div key={entry.id} className="space-y-2">
+              <div className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className={`chat-bubble ${
+                    entry.role === 'user'
+                      ? 'chat-bubble-user'
+                      : entry.kind === 'style'
+                      ? 'chat-bubble-style'
+                      : 'chat-bubble-ai'
+                  }`}
+                >
+                  {entry.kind === 'style' && (
+                    <p className="mb-1 text-[10px] font-semibold text-violet-700/70">Voice</p>
+                  )}
+                  {entry.content && <p><InlineMd text={entry.content} /></p>}
+                  {entry.activity && entry.activity.length > 0 && (
+                    <ActivityStepsDropdown steps={entry.activity} />
+                  )}
+                  {entry.role === 'assistant' && suggestion?.accepted === true && (
+                    <p className="mt-1.5 flex items-center gap-1 text-[10px] text-green-700">
+                      <Check size={10} /> Applied
+                    </p>
+                  )}
+                  {entry.role === 'assistant' && suggestion?.accepted === false && (
+                    <p className="mt-1.5 flex items-center gap-1 text-[10px] text-black/40">
+                      <X size={10} /> Rejected
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })}
+
+        {isStreaming && !chat.some((m) => m.kind === 'agent') && (
+          <div className="flex justify-start">
+            <div className="chat-bubble chat-bubble-ai">
+              <div className="flex items-center gap-2 text-black/40">
+                <Loader2 size={12} className="animate-spin" />
+                Working…
+              </div>
+            </div>
+          </div>
+        )}
+        <div ref={chatEndRef} />
+      </div>
+
+      <div
+        className={`assistant-input-zone ${dragOver ? 'prompt-dropzone-active' : ''}`}
+        onDragOver={(e) => {
+          e.preventDefault()
+          setDragOver(true)
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={handlePromptDrop}
+      >
+        {dragOver && <div className="prompt-drop-hint">Release to attach passage</div>}
+
+        <div className="assistant-input-bar">
+          <textarea
+            ref={promptRef}
+            value={aiPrompt}
+            onChange={(e) => {
+              setAiPrompt(e.target.value)
+              requestAnimationFrame(syncPromptHeight)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                handleAIAssist()
+              }
+            }}
+            rows={1}
+            placeholder={
+              attachedSelection
+                ? 'How should this passage be refined?'
+                : 'Request revisions or converse with your editor…'
+            }
+            className="assistant-textarea"
+            disabled={isStreaming}
+          />
+          {isStreaming ? (
+            <Loader2 size={14} className="assistant-input-spinner animate-spin flex-shrink-0" />
+          ) : (
+            <button
+              type="button"
+              className="glass-btn assistant-send-btn"
+              onClick={() => handleAIAssist()}
+              disabled={!aiPrompt.trim() || !hasApiKey}
+              title="Send message"
+              aria-label="Send message"
+            >
+              <Send size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+    </>
+  )
+
   if (!hydrated) {
     return (
       <div className="h-full flex items-center justify-center text-sm text-black/40">
@@ -1080,7 +1589,10 @@ INSTRUCTION: ${instruction}`
   }
 
   return (
-    <div className="write-mode h-full relative overflow-hidden">
+    <div
+      className={`write-mode h-full relative overflow-hidden${composeChromeVisible && assistantOpen ? ' assistant-open' : ''}`}
+      style={writeModeStyle}
+    >
       <div className="h-full flex flex-col overflow-hidden">
         {!showDocLibrary && !showContextHouse && (
           <div className="flex-shrink-0 flex items-center justify-between border-b border-black/8 bg-white/30 backdrop-blur px-4 py-2">
@@ -1198,9 +1710,14 @@ INSTRUCTION: ${instruction}`
 
         <div className="flex-1 overflow-hidden relative">
           {/* Editor — kept mounted; hidden when a full-screen panel is covering it */}
-          <div className={`h-full overflow-y-auto${showDocLibrary || showContextHouse ? ' invisible pointer-events-none' : ''}`}>
-            <div className="tiptap-editor max-w-3xl mx-auto min-h-full" data-tour="editor">
-              <EditorContent editor={editor} className="min-h-full" />
+          <div
+            ref={editorScrollRef}
+            className={`write-editor-scroll h-full overflow-y-auto${showDocLibrary || showContextHouse ? ' invisible pointer-events-none' : ''}`}
+          >
+            <div className="compose-page">
+              <div className="tiptap-editor compose-page__body min-h-full" data-tour="editor">
+                <EditorContent editor={editor} className="min-h-full" />
+              </div>
             </div>
           </div>
 
@@ -1215,7 +1732,7 @@ INSTRUCTION: ${instruction}`
                 transition={{ duration: 0.2, ease: [0.25, 1, 0.5, 1] }}
                 className="absolute inset-0 overflow-hidden"
               >
-                <DocumentsMode onClose={() => setShowDocLibrary(false)} />
+                <DocumentsMode onClose={() => { setShowDocLibrary(false); setAssistantOpen(true) }} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -1231,7 +1748,7 @@ INSTRUCTION: ${instruction}`
                 transition={{ duration: 0.2, ease: [0.25, 1, 0.5, 1] }}
                 className="absolute inset-0 overflow-hidden"
               >
-                <ContextHouse onClose={() => setShowContextHouse(false)} />
+                <ContextHouse onClose={() => { setShowContextHouse(false); setAssistantOpen(true) }} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -1239,7 +1756,7 @@ INSTRUCTION: ${instruction}`
 
         {/* Floating selection toolbar */}
         <AnimatePresence>
-          {selectionMenu && !review && (
+          {composeChromeVisible && selectionMenu && (
             <motion.div
               initial={{ opacity: 0, y: 6, scale: 0.96 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -1267,232 +1784,116 @@ INSTRUCTION: ${instruction}`
                   setSelectionMenu(null)
                 }}
               >
-                Add to editor
+                {review ? 'New chat' : 'Add to editor'}
               </button>
             </motion.div>
           )}
         </AnimatePresence>
       </div>
 
-      {/* Floating vertical document tabs — hidden when a panel is covering the workspace */}
-      {!showDocLibrary && !showContextHouse && <div className="doc-tabs-float" aria-label="Document tabs" data-tour="doctabs">
-        {docTabs.map((tab) => (
-          <div
-            key={tab.id}
-            className={`doc-tab ${tab.id === activeTabId ? 'active' : ''}`}
-            onClick={() => switchTab(tab.id)}
-            onDoubleClick={(e) => {
-              e.stopPropagation()
-              setRenamingTab({ id: tab.id, value: tab.name })
-            }}
-          >
-            {renamingTab?.id === tab.id ? (
-              <input
-                autoFocus
-                className="doc-tab-rename"
-                value={renamingTab.value}
-                onChange={(e) => setRenamingTab({ id: tab.id, value: e.target.value })}
-                onBlur={commitTabRename}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitTabRename()
-                  if (e.key === 'Escape') setRenamingTab(null)
-                }}
-                onClick={(e) => e.stopPropagation()}
+      {/* Document tabs — fixed top-left, independent of context dock */}
+      {composeChromeVisible && (
+        <div className="doc-tabs-float" aria-label="Document tabs" data-tour="doctabs">
+          {docTabs.map((tab) => (
+            <div
+              key={tab.id}
+              className={`doc-tab ${tab.id === activeTabId ? 'active' : ''}`}
+              onClick={() => switchTab(tab.id)}
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                setRenamingTab({ id: tab.id, value: tab.name })
+              }}
+            >
+              {renamingTab?.id === tab.id ? (
+                <input
+                  autoFocus
+                  className="doc-tab-rename"
+                  value={renamingTab.value}
+                  onChange={(e) => setRenamingTab({ id: tab.id, value: e.target.value })}
+                  onBlur={commitTabRename}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitTabRename()
+                    if (e.key === 'Escape') setRenamingTab(null)
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <span className="doc-tab-name">{tab.name}</span>
+              )}
+              {docTabs.length > 1 && (
+                <button
+                  className="doc-tab-close"
+                  title="Delete tab"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    deleteDocTab(tab.id)
+                  }}
+                >
+                  <X size={10} />
+                </button>
+              )}
+            </div>
+          ))}
+          <button className="doc-tab-add" onClick={handleNewTab} title="New tab">
+            <Plus size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* Context dock — fixed bottom-left */}
+      {composeChromeVisible && (
+        <ComposeContextDock
+          onOpenContextHouse={() => {
+            setShowContextHouse(true)
+            setAssistantOpen(false)
+          }}
+        />
+      )}
+
+      {composeChromeVisible && (
+      <div
+        className={`assistant-rail${assistantOpen ? ' is-open' : ' is-collapsed'}`}
+        data-tour="assistant"
+      >
+        <div
+          className="assistant-rail-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={assistantOpen ? 'Drag to resize editor, click to collapse' : 'Open editor'}
+          onPointerDown={onRailPointerDown}
+          onPointerMove={onRailPointerMove}
+          onPointerUp={onRailPointerUp}
+        >
+          <span className="assistant-rail-grip" aria-hidden />
+        </div>
+        <div
+          className="assistant-panel"
+          style={{ width: assistantOpen ? assistantWidth : 0 }}
+          aria-hidden={!assistantOpen}
+        >
+          {assistantOpen && (
+            tunnel ? (
+              <RefinePanel
+                sentence={tunnel.sentence}
+                contextBefore={tunnel.contextBefore}
+                contextAfter={tunnel.contextAfter}
+                apiKey={apiKey}
+                styleGuide={compileStyleGuide(styleRules)}
+                researchContext={getFullContext()}
+                onApply={applyTunnel}
+                onClose={closeRefine}
               />
             ) : (
-              <span className="doc-tab-name">{tab.name}</span>
-            )}
-            {docTabs.length > 1 && (
-              <button
-                className="doc-tab-close"
-                title="Delete tab"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  deleteDocTab(tab.id)
-                }}
-              >
-                <X size={10} />
-              </button>
-            )}
-          </div>
-        ))}
-        <button className="doc-tab-add" onClick={handleNewTab} title="New tab">
-          <Plus size={12} />
-        </button>
-      </div>}
-
-      <AnimatePresence initial={false}>
-        {assistantOpen && (
-          <motion.div
-            key="assistant"
-            initial={{ opacity: 0, x: 16, scale: 0.98 }}
-            animate={{ opacity: 1, x: 0, scale: 1 }}
-            exit={{ opacity: 0, x: 16, scale: 0.98 }}
-            transition={{ duration: 0.22, ease: [0.25, 1, 0.5, 1] }}
-            className="assistant-float"
-            data-tour="assistant"
-          >
-            <div className="assistant-panel">
-              {chatThreads.length > 0 && (
-                <div className="assistant-thread-bar">
-                  {chatThreads.map((thread) => (
-                    <div
-                      key={thread.id}
-                      role="tab"
-                      aria-selected={thread.id === activeChatThreadId}
-                      className={`assistant-thread-pill${thread.id === activeChatThreadId ? ' active' : ''}`}
-                      onClick={() => switchChatThread(thread.id)}
-                      title={
-                        thread.passage
-                          ? `${thread.label} — focused on: ${thread.passage.slice(0, 120)}`
-                          : thread.label
-                      }
-                    >
-                      <span className="assistant-thread-pill-label">{thread.label}</span>
-                      <button
-                        type="button"
-                        className="assistant-thread-pill-close"
-                        title="Delete chat"
-                        aria-label={`Delete ${thread.label}`}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          deleteChatThread(thread.id)
-                        }}
-                      >
-                        <X size={9} />
-                      </button>
-                    </div>
-                  ))}
-                  <button
-                    type="button"
-                    className="assistant-thread-pill assistant-thread-pill-add"
-                    onClick={() => {
-                      const tab = useStore.getState().getActiveTab()
-                      const { threads } = ensureTabChatState(tab)
-                      const newThread = createChatThread(threads)
-                      updateActiveTabChat({
-                        chatThreads: [...threads, newThread],
-                        activeChatThreadId: newThread.id,
-                      })
-                      const ed = editorRef.current
-                      if (ed && !reviewActiveRef.current) clearReferenceHighlightIn(ed)
-                    }}
-                    title="New chat"
-                  >
-                    <Plus size={11} />
-                  </button>
-                </div>
-              )}
-              <div className="flex-1 overflow-y-auto px-3 pt-3 pb-3 space-y-3 min-h-0">
-                {chat.map((entry) => {
-                  const suggestion = entry.suggestionId
-                    ? suggestions.find((s) => s.id === entry.suggestionId)
-                    : undefined
-
-                  return (
-                    <div key={entry.id} className="space-y-2">
-                      <div className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div
-                          className={`chat-bubble ${
-                            entry.role === 'user'
-                              ? 'chat-bubble-user'
-                              : entry.kind === 'style'
-                              ? 'chat-bubble-style'
-                              : 'chat-bubble-ai'
-                          }`}
-                        >
-                          {entry.kind === 'style' && (
-                            <p className="mb-1 text-[10px] font-semibold text-violet-700/70">Voice</p>
-                          )}
-                          <p><InlineMd text={entry.content} /></p>
-                          {entry.role === 'assistant' && suggestion?.accepted === true && (
-                            <p className="mt-1.5 flex items-center gap-1 text-[10px] text-green-700">
-                              <Check size={10} /> Applied
-                            </p>
-                          )}
-                          {entry.role === 'assistant' && suggestion?.accepted === false && (
-                            <p className="mt-1.5 flex items-center gap-1 text-[10px] text-black/40">
-                              <X size={10} /> Rejected
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-
-                {isStreaming && (
-                  <div className="flex justify-start">
-                    <div className="chat-bubble chat-bubble-ai">
-                      <div className="flex items-center gap-2 text-black/40">
-                        <Loader2 size={12} className="animate-spin" />
-                        Refining with precision…
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <div ref={chatEndRef} />
-              </div>
-
-              {/* Floating glass input */}
-              <div
-                className={`assistant-input-zone ${dragOver ? 'prompt-dropzone-active' : ''}`}
-                onDragOver={(e) => {
-                  e.preventDefault()
-                  setDragOver(true)
-                }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handlePromptDrop}
-              >
-                {dragOver && <div className="prompt-drop-hint">Release to attach passage</div>}
-
-                <div className="assistant-input-bar">
-                  <textarea
-                    ref={promptRef}
-                    value={aiPrompt}
-                    onChange={(e) => {
-                      setAiPrompt(e.target.value)
-                      requestAnimationFrame(syncPromptHeight)
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        handleAIAssist()
-                      }
-                    }}
-                    rows={1}
-                    placeholder={
-                      attachedSelection
-                        ? 'How should this passage be refined?'
-                        : 'Request revisions or converse with your editor…'
-                    }
-                    className="assistant-textarea"
-                    disabled={isStreaming}
-                  />
-                  {isStreaming ? (
-                    <Loader2 size={14} className="assistant-input-spinner animate-spin flex-shrink-0" />
-                  ) : (
-                    <button
-                      type="button"
-                      className="glass-btn assistant-send-btn"
-                      onClick={() => handleAIAssist()}
-                      disabled={!aiPrompt.trim() || !hasApiKey}
-                      title="Send message"
-                      aria-label="Send message"
-                    >
-                      <Send size={14} />
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+              assistantPanelInner
+            )
+          )}
+        </div>
+      </div>
+      )}
 
       {/* Floating accept / reject all — does not shift document layout */}
       <AnimatePresence>
-        {review && (
+        {composeChromeVisible && review && (
           <motion.div
             key="review-float"
             initial={{ opacity: 0, y: 10, scale: 0.96 }}
@@ -1515,22 +1916,6 @@ INSTRUCTION: ${instruction}`
             </button>
             <span className="review-float-hint">Ctrl+Enter</span>
           </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Overlays */}
-      <AnimatePresence>
-        {tunnel && editor && (
-          <TunnelVision
-            sentence={tunnel.sentence}
-            contextBefore={tunnel.contextBefore}
-            contextAfter={tunnel.contextAfter}
-            apiKey={apiKey}
-            styleGuide={compileStyleGuide(styleRules)}
-            researchContext={getFullContext()}
-            onApply={applyTunnel}
-            onClose={() => setTunnel(null)}
-          />
         )}
       </AnimatePresence>
 

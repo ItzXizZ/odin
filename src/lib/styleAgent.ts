@@ -12,6 +12,7 @@
 
 import type { StyleRule } from './style'
 import { authHeader } from './supabase'
+import { augmentSystemPrompt, sanitizeAiProse } from './aiText'
 
 export interface ChatToolMessage {
   role: 'user' | 'assistant'
@@ -218,14 +219,14 @@ function parseActions(blocks: ContentBlock[]): StyleAgentAction[] {
         actions.push({
           type: 'reinforce',
           ruleIds: Array.isArray(inp.rule_ids) ? (inp.rule_ids as string[]) : [],
-          reason: String(inp.reason ?? ''),
+          reason: sanitizeAiProse(String(inp.reason ?? '')),
         })
         break
       case 'create_style_rule':
         actions.push({
           type: 'create',
-          label: String(inp.label ?? 'New rule'),
-          instruction: String(inp.instruction ?? ''),
+          label: sanitizeAiProse(String(inp.label ?? 'New rule')),
+          instruction: sanitizeAiProse(String(inp.instruction ?? '')),
           relatedRuleIds: Array.isArray(inp.related_rule_ids)
             ? (inp.related_rule_ids as string[])
             : [],
@@ -235,22 +236,22 @@ function parseActions(blocks: ContentBlock[]): StyleAgentAction[] {
         actions.push({
           type: 'conflict',
           ruleId: String(inp.rule_id ?? ''),
-          explanation: String(inp.explanation ?? ''),
+          explanation: sanitizeAiProse(String(inp.explanation ?? '')),
         })
         break
       case 'edit_style_rule':
         actions.push({
           type: 'edit',
           ruleId: String(inp.rule_id ?? ''),
-          label: typeof inp.new_label === 'string' ? inp.new_label : undefined,
-          instruction: typeof inp.new_instruction === 'string' ? inp.new_instruction : undefined,
+          label: typeof inp.new_label === 'string' ? sanitizeAiProse(inp.new_label) : undefined,
+          instruction: typeof inp.new_instruction === 'string' ? sanitizeAiProse(inp.new_instruction) : undefined,
         })
         break
       case 'delete_style_rule':
         actions.push({ type: 'delete', ruleId: String(inp.rule_id ?? '') })
         break
       case 'no_style_action':
-        actions.push({ type: 'none', reason: String(inp.reason ?? '') })
+        actions.push({ type: 'none', reason: sanitizeAiProse(String(inp.reason ?? '')) })
         break
     }
   }
@@ -265,7 +266,7 @@ async function callToolEndpoint(
   const res = await fetch('/api/chat/tools', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeader() },
-    body: JSON.stringify({ messages, system, apiKey, tools: STYLE_AGENT_TOOLS, maxTokens: 1024 }),
+    body: JSON.stringify({ messages, system: augmentSystemPrompt(system), apiKey, tools: STYLE_AGENT_TOOLS, maxTokens: 1024 }),
     signal: AbortSignal.timeout(45000),
   })
 
@@ -278,7 +279,7 @@ async function callToolEndpoint(
   const blocks: ContentBlock[] = Array.isArray(data.content) ? data.content : []
   const text = blocks
     .filter((b): b is TextBlock => b.type === 'text')
-    .map((b) => b.text.trim())
+    .map((b) => sanitizeAiProse(b.text.trim()))
     .filter(Boolean)
     .join('\n')
 

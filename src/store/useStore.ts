@@ -5,7 +5,6 @@ import { workspaceStorage } from '../lib/workspaceStorage'
 import type { Node, Edge } from 'reactflow'
 import type { SourceRef } from '../lib/sources'
 import {
-  DEFAULT_STYLE_RULES,
   migrateStyleRule,
   computeStyleEdges,
   connectionKey,
@@ -14,6 +13,7 @@ import {
   type StyleConnectionBonus,
   type StyleActivation,
 } from '../lib/style'
+import { buildPrioritizedContext } from '../lib/contextPrompt'
 
 export type AppTab = 'home' | 'stream' | 'exploration' | 'write' | 'stylism' | 'grade'
 
@@ -332,6 +332,15 @@ export interface GradeResult {
   annotations: GradeAnnotation[]
 }
 
+/** A writing sample uploaded in the Voice tab — text capped for storage. */
+export interface StoredVoiceDocument {
+  id: string
+  name: string
+  ext: string
+  text: string
+  addedAt: number
+}
+
 interface AppState {
   // Navigation
   activeTab: AppTab
@@ -360,6 +369,10 @@ interface AppState {
   styleConnections: StyleConnectionBonus[]
   /** Last reinforcement event — consumed by the Stylism network animation. */
   lastStyleActivation: StyleActivation | null
+  /** Eloquent voice observations distilled from the writer's uploaded work. */
+  voiceNotes: string[]
+  /** Uploaded writing samples that feed voice analysis — persisted across sessions. */
+  voiceDocuments: StoredVoiceDocument[]
 
   // Grade Mode
   rubric: string
@@ -427,11 +440,29 @@ interface AppState {
   /** Add a rule born from feedback, wired to its related rules. Returns id. */
   addStyleRule: (rule: { label: string; instruction: string; relatedRuleIds?: string[]; source?: StyleRule['source'] }) => string
   /** Bulk-add principles from a writing sample analysis; wires similarity edges once. */
-  importStyleRules: (items: { label: string; instruction: string }[]) => string[]
-  editStyleRule: (id: string, patch: Partial<Pick<StyleRule, 'label' | 'instruction' | 'enabled'>>) => void
+  importStyleRules: (
+    items: {
+      label: string
+      instruction: string
+      weight?: number
+      example?: { good: string; bad: string }
+      sourceDocs?: string[]
+    }[]
+  ) => string[]
+  editStyleRule: (
+    id: string,
+    patch: Partial<Pick<StyleRule, 'label' | 'instruction' | 'enabled' | 'example'>>
+  ) => void
   deleteStyleRule: (id: string) => void
+  /** Wipe every principle, connection, and note — a clean slate. */
+  clearAllStyleRules: () => void
   setStyleRulePosition: (id: string, x: number, y: number) => void
   clearStyleActivation: () => void
+  /** Append newly distilled voice notes (deduped), newest first. */
+  appendVoiceNotes: (notes: string[]) => void
+  clearVoiceNotes: () => void
+  addVoiceDocuments: (docs: { name: string; ext: string; text: string }[]) => string[]
+  removeVoiceDocument: (id: string) => void
 
   setRubric: (rubric: string) => void
   setGradeResult: (result: GradeResult | null) => void
@@ -465,9 +496,11 @@ export const useStore = create<AppState>()(
       activeDocumentId: null as string | null,
       writingPrompt: '',
       highlightedText: '',
-      styleRules: DEFAULT_STYLE_RULES,
+      styleRules: [],
       styleConnections: [],
       lastStyleActivation: null,
+      voiceNotes: [],
+      voiceDocuments: [],
 
       rubric: `Thesis & Argument (25 pts): Clear, debatable thesis with well-supported arguments
 Evidence & Analysis (25 pts): Relevant evidence with deep critical analysis
@@ -810,11 +843,13 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
               label: item.label,
               instruction: item.instruction,
               enabled: true,
-              weight: 1.4,
+              weight: Math.max(1, item.weight ?? 1.4),
               useCount: 1,
               lastActivatedAt: now,
               createdAt: now,
               source: 'ai',
+              example: item.example,
+              sourceDocs: item.sourceDocs,
             }
             born.push(rule)
             const pool = [...s.styleRules, ...born.slice(0, -1)]
@@ -851,6 +886,9 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
           styleConnections: s.styleConnections.filter((c) => c.a !== id && c.b !== id),
         })),
 
+      clearAllStyleRules: () =>
+        set({ styleRules: [], styleConnections: [], voiceNotes: [], lastStyleActivation: null }),
+
       setStyleRulePosition: (id, x, y) =>
         set((s) => ({
           styleRules: s.styleRules.map((r) => (r.id === id ? { ...r, x, y } : r)),
@@ -858,70 +896,76 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
 
       clearStyleActivation: () => set({ lastStyleActivation: null }),
 
+      appendVoiceNotes: (notes) =>
+        set((s) => {
+          const clean = notes.map((n) => n.trim()).filter(Boolean)
+          if (clean.length === 0) return s
+          const seen = new Set(s.voiceNotes.map((n) => n.toLowerCase()))
+          const fresh = clean.filter((n) => !seen.has(n.toLowerCase()))
+          if (fresh.length === 0) return s
+          // Oldest at top, newest appended below; cap from the top when full.
+          return { voiceNotes: [...s.voiceNotes, ...fresh].slice(-40) }
+        }),
+
+      clearVoiceNotes: () => set({ voiceNotes: [] }),
+
+      addVoiceDocuments: (docs) => {
+        const MAX_TEXT = 60000
+        const ids: string[] = []
+        set((s) => {
+          const born: StoredVoiceDocument[] = docs.map((d) => {
+            const id = nanoid()
+            ids.push(id)
+            return {
+              id,
+              name: d.name,
+              ext: d.ext,
+              text: d.text.slice(0, MAX_TEXT),
+              addedAt: Date.now(),
+            }
+          })
+          return { voiceDocuments: [...s.voiceDocuments, ...born] }
+        })
+        return ids
+      },
+
+      removeVoiceDocument: (id) =>
+        set((s) => ({ voiceDocuments: s.voiceDocuments.filter((d) => d.id !== id) })),
+
       setRubric: (rubric) => set({ rubric }),
       setGradeResult: (result) => set({ gradeResult: result }),
       setIsGrading: (v) => set({ isGrading: v }),
 
       getFullContext: () => {
         const s = get()
-        const parts: string[] = []
-        const ctx = s.getActiveDocumentContext()
-        const doc = s.getActiveDocument()
-
-        if (doc) {
-          parts.push(`=== ACTIVE DOCUMENT: ${doc.title} ===`)
-        }
-
-        if (ctx.pdfs.length > 0) {
-          parts.push('=== CONTEXT PDFs ===')
-          ctx.pdfs.forEach((pdf) => {
-            parts.push(`[${pdf.name}]`)
-            if (pdf.summary) parts.push(`Summary: ${pdf.summary}`)
-            parts.push(pdf.text.slice(0, 3000))
-          })
-        }
-
-        if (ctx.images.length > 0) {
-          parts.push('=== REFERENCE IMAGES ===')
-          ctx.images.forEach((img) => {
-            parts.push(`[${img.name}]: ${img.description || 'Visual reference image attached to this document'}`)
-          })
-        }
-
-        const linkedAdventures = ctx.linkedAdventureIds
-          .map((id) => s.adventures.find((a) => a.id === id))
-          .filter((a): a is Adventure => a != null)
-          .filter((a) => a.nodes.some((n) => n.data.response) || a.takeaways.length > 0)
-
-        if (linkedAdventures.length > 0) {
-          parts.push('=== LINKED EXPLORATION ADVENTURES ===')
-          linkedAdventures.forEach((adventure) => {
-            parts.push(`--- ${adventure.name} ---`)
-            adventure.nodes.forEach((node) => {
-              if (node.data.response) {
-                parts.push(`Q: ${node.data.prompt}`)
-                parts.push(`A: ${node.data.response.slice(0, 500)}`)
-              }
-            })
-            if (adventure.takeaways.length > 0) {
-              parts.push('Takeaways:')
-              adventure.takeaways.forEach((t) => parts.push(`• ${t.text}`))
-            }
-          })
-        }
-
-        return parts.join('\n\n')
+        return buildPrioritizedContext({
+          doc: s.getActiveDocument(),
+          ctx: s.getActiveDocumentContext(),
+          adventures: s.adventures,
+        })
       },
     }),
     {
       name: 'scribe-storage',
-      version: 8,
+      version: 9,
       // Hydration is deferred to the auth layer so we load the *correct* user's
       // data once their identity is known (see AuthProvider).
       skipHydration: true,
       storage: createJSONStorage(() => workspaceStorage),
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>
+        if (version < 9 && Array.isArray(state.styleRules)) {
+          const rules = (state.styleRules as StyleRule[]).filter(
+            (r) => r.source === 'ai' || r.source === 'user'
+          )
+          const live = new Set(rules.map((r) => r.id))
+          state.styleRules = rules
+          if (Array.isArray(state.styleConnections)) {
+            state.styleConnections = (state.styleConnections as StyleConnectionBonus[]).filter(
+              (c) => live.has(c.a) && live.has(c.b)
+            )
+          }
+        }
         if (version < 8 && Array.isArray(state.documents)) {
           const docs = state.documents as Record<string, unknown>[]
           state.documents = docs.filter((d) => !isBlankDocument(d as Parameters<typeof isBlankDocument>[0]))
@@ -1011,7 +1055,7 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
           const legacyRules = (state.styleRules as (Partial<StyleRule> & { id: string })[]) ?? []
           state.styleRules = legacyRules.length
             ? legacyRules.map(migrateStyleRule)
-            : DEFAULT_STYLE_RULES
+            : []
           state.styleConnections = []
         }
         if (version < 2) {
@@ -1043,6 +1087,8 @@ Grammar & Mechanics (15 pts): Correct grammar, punctuation, and citation format`
         activeDocumentId: s.activeDocumentId,
         styleRules: s.styleRules,
         styleConnections: s.styleConnections,
+        voiceNotes: s.voiceNotes,
+        voiceDocuments: s.voiceDocuments,
         rubric: s.rubric,
         adventures: s.adventures,
         activeAdventureId: s.activeAdventureId,

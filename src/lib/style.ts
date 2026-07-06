@@ -14,7 +14,7 @@
  *   wholesale rewrites.
  */
 
-import { unescapeModelText } from './aiText'
+import { unescapeModelText, sanitizeAiProse } from './aiText'
 
 export interface StyleRule {
   id: string
@@ -28,9 +28,52 @@ export interface StyleRule {
   lastActivatedAt: number | null
   createdAt: number
   source: 'default' | 'user' | 'ai'
+  /** Short instructional contrast shown when a node is expanded. */
+  example?: { good: string; bad: string }
+  /** Names of the uploaded documents this principle was distilled from. */
+  sourceDocs?: string[]
   /** Persisted network layout position (viewport-relative). */
   x?: number
   y?: number
+}
+
+/** Deterministic hue (0–360) for a document name, so its tint is stable. */
+export function docHue(name: string): number {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360
+  // Spread across the wheel so similar names still separate.
+  return (h * 47) % 360
+}
+
+/** Group rule ids into connected components ("colonies") from the edge set. */
+export function connectedComponents(
+  ids: string[],
+  edges: { a: string; b: string }[]
+): string[][] {
+  const parent = new Map<string, string>()
+  ids.forEach((id) => parent.set(id, id))
+  const find = (x: string): string => {
+    let r = x
+    while (parent.get(r) !== r) r = parent.get(r)!
+    while (parent.get(x) !== r) {
+      const next = parent.get(x)!
+      parent.set(x, r)
+      x = next
+    }
+    return r
+  }
+  const union = (a: string, b: string) => {
+    if (!parent.has(a) || !parent.has(b)) return
+    parent.set(find(a), find(b))
+  }
+  for (const e of edges) union(e.a, e.b)
+  const groups = new Map<string, string[]>()
+  for (const id of ids) {
+    const root = find(id)
+    if (!groups.has(root)) groups.set(root, [])
+    groups.get(root)!.push(id)
+  }
+  return [...groups.values()]
 }
 
 /** Learned (Hebbian) connection bonus between two rules, keyed a<b. */
@@ -246,22 +289,27 @@ export function computeStyleEdges(
  * the most-reinforced rules are framed as non-negotiable.
  */
 export function compileStyleGuide(rules: StyleRule[]): string {
-  const active = rules.filter((r) => r.enabled).sort((a, b) => b.weight - a.weight)
-  if (active.length === 0) return ''
+  const emDashRule =
+    'Never use em dashes (—) or en dashes (–) as punctuation. Use commas, periods, semicolons, parentheses, or colons instead. [CRITICAL — non-negotiable; enforced automatically]'
 
-  const maxWeight = active[0].weight
-  const lines = active
-    .map((r, i) => {
-      const reinforced = r.weight > 1.05
-      const critical = reinforced && maxWeight > 1.05 && r.weight >= maxWeight * 0.75
-      const marker = critical
-        ? ' [CRITICAL — the writer has repeatedly insisted on this; never violate it]'
-        : reinforced
-        ? ' [reinforced by the writer]'
+  const active = rules.filter((r) => r.enabled).sort((a, b) => b.weight - a.weight)
+  const numbered = active.map((r, i) => {
+    const reinforced = r.weight > 1.05
+    const maxWeight = active[0]?.weight ?? 1
+    const critical = reinforced && maxWeight > 1.05 && r.weight >= maxWeight * 0.75
+    const marker = critical
+      ? ' [CRITICAL — the writer has repeatedly insisted on this; never violate it]'
+      : reinforced
+      ? ' [reinforced by the writer]'
+      : ''
+    const source =
+      r.sourceDocs && r.sourceDocs.length > 0
+        ? ` (from: ${r.sourceDocs.slice(0, 3).join(', ')}${r.sourceDocs.length > 3 ? '…' : ''})`
         : ''
-      return `${i + 1}. ${r.instruction}${marker}`
-    })
-    .join('\n')
+    return `${i + 2}. ${r.instruction}${marker}${source}`
+  })
+
+  const lines = [`1. ${emDashRule}`, ...numbered].join('\n')
 
   return `=== HOUSE STYLE (ranked by how strongly the writer has reinforced each rule) ===
 These rules override your default habits. They are listed in strict priority order: rule 1 matters most. Rules marked [CRITICAL] are non-negotiable — the writer has corrected you on them before and violating them again would break trust. Follow every rule, but when rules tension against each other, the higher-ranked rule wins.
@@ -371,14 +419,14 @@ export function parseEditResponse(raw: string): EditResponse | null {
   const tryParse = (s: string): EditResponse | null => {
     try {
       const obj = JSON.parse(s)
-      const message = typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : undefined
+      const message = typeof obj.message === 'string' ? sanitizeAiProse(unescapeModelText(obj.message.trim())) : undefined
       const edits = Array.isArray(obj) ? obj : obj?.edits
       if (!Array.isArray(edits)) return null
       const clean = edits
         .filter((e) => e && typeof e.find === 'string' && typeof e.replace === 'string')
         .map((e) => ({
           find: unescapeModelText(e.find as string),
-          replace: unescapeModelText(e.replace as string),
+          replace: sanitizeAiProse(unescapeModelText(e.replace as string)),
         }))
       return { edits: clean, message: message || undefined }
     } catch {
@@ -440,7 +488,7 @@ export function parseAgentResponse(raw: string): AgentResponse | null {
     const type = obj?.type as string | undefined
 
     if (type === 'chat') {
-      const message = typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : ''
+      const message = typeof obj.message === 'string' ? sanitizeAiProse(unescapeModelText(obj.message.trim())) : ''
       if (!message) return null
       return { type: 'chat', message }
     }
@@ -451,17 +499,17 @@ export function parseAgentResponse(raw: string): AgentResponse | null {
             .filter((e: unknown) => e && typeof (e as ParsedEdit).find === 'string' && typeof (e as ParsedEdit).replace === 'string')
             .map((e: ParsedEdit) => ({
               find: unescapeModelText(e.find),
-              replace: unescapeModelText(e.replace),
+              replace: sanitizeAiProse(unescapeModelText(e.replace)),
             }))
         : []
-      const message = typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : undefined
+      const message = typeof obj.message === 'string' ? sanitizeAiProse(unescapeModelText(obj.message.trim())) : undefined
       return { type: 'edit', message, edits }
     }
 
     if (type === 'create') {
-      const content = typeof obj.content === 'string' ? unescapeModelText(obj.content.trim()) : ''
+      const content = typeof obj.content === 'string' ? sanitizeAiProse(unescapeModelText(obj.content.trim())) : ''
       if (!content) return null
-      const message = typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : undefined
+      const message = typeof obj.message === 'string' ? sanitizeAiProse(unescapeModelText(obj.message.trim())) : undefined
       return { type: 'create', message, content }
     }
 
@@ -469,8 +517,8 @@ export function parseAgentResponse(raw: string): AgentResponse | null {
     if (typeof obj.content === 'string' && obj.content.trim()) {
       return {
         type: 'create',
-        message: typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : undefined,
-        content: unescapeModelText(obj.content.trim()),
+        message: typeof obj.message === 'string' ? sanitizeAiProse(unescapeModelText(obj.message.trim())) : undefined,
+        content: sanitizeAiProse(unescapeModelText(obj.content.trim())),
       }
     }
 
@@ -491,8 +539,8 @@ export function parseDraftResponse(raw: string): { content: string; message?: st
     const obj = JSON.parse(text.slice(first, last + 1))
     if (typeof obj.content !== 'string' || !obj.content.trim()) return null
     return {
-      content: unescapeModelText(obj.content.trim()),
-      message: typeof obj.message === 'string' ? unescapeModelText(obj.message.trim()) : undefined,
+      content: sanitizeAiProse(unescapeModelText(obj.content.trim())),
+      message: typeof obj.message === 'string' ? sanitizeAiProse(unescapeModelText(obj.message.trim())) : undefined,
     }
   } catch {
     return null

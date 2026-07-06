@@ -4,7 +4,8 @@ import Layout from './components/Layout'
 import LoginScreen from './components/LoginScreen'
 import TrialPaywall from './components/TrialPaywall'
 import IphoneUnsupportedScreen, { isIPhoneDevice } from './components/IphoneUnsupportedScreen'
-import { AuthProvider, SignupCompleteHandler, useAuth } from './lib/auth'
+import { AuthProvider, ReferralCapture, ReferralClaimHandler, SignupCompleteHandler, useAuth } from './lib/auth'
+import CompetitionLeaderboard from './components/CompetitionLeaderboard'
 import { confirmCheckout, fetchSubscriptionStatus } from './lib/subscription'
 import { trackTrialConversion } from './lib/conversion'
 import { clearOnboardingFinished, hasFinishedOnboarding, onOnboardingFinished } from './lib/onboarding'
@@ -383,14 +384,26 @@ export default function App() {
     )
   }
 
+  const isCompetitionPage =
+    typeof window !== 'undefined' &&
+    (window.location.pathname === '/competition' || window.location.pathname === '/affiliate')
+
   return (
     <div
       className="h-screen w-screen overflow-hidden flex flex-col"
       style={{ background: 'rgb(215,215,215)' }}
     >
       <AuthProvider>
-        <SignupCompleteHandler />
-        <Gate />
+        <ReferralCapture />
+        <ReferralClaimHandler />
+        {isCompetitionPage ? (
+          <CompetitionLeaderboard />
+        ) : (
+          <>
+            <SignupCompleteHandler />
+            <Gate />
+          </>
+        )}
       </AuthProvider>
     </div>
   )

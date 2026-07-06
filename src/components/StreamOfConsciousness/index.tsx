@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useStore, useHasApiKey } from '../../store/useStore'
 import { streamChat, syncChat } from '../../lib/claude'
+import { sanitizeAiProse } from '../../lib/aiText'
 
 type Mode = 'audio' | 'text'
 
@@ -45,10 +46,10 @@ export default function StreamOfConsciousness() {
             setQuestionBuffer(buf)
           },
           () => {
-            const qs = buf
+            const qs = sanitizeAiProse(buf)
               .split('\n')
               .filter((l) => /^\d+\./.test(l.trim()))
-              .map((l) => l.replace(/^\d+\.\s*/, '').trim())
+              .map((l) => sanitizeAiProse(l.replace(/^\d+\.\s*/, '').trim()))
               .filter(Boolean)
             if (qs.length > 0) setQuestions((prev) => [...qs, ...prev].slice(0, 15))
             setQuestionBuffer('')

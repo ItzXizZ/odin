@@ -1,4 +1,5 @@
 import { authHeader } from './supabase'
+import { augmentSystemPrompt } from './aiText'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
@@ -28,7 +29,7 @@ export async function streamChat(
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeader() },
-      body: JSON.stringify({ messages, system, apiKey }),
+      body: JSON.stringify({ messages, system: augmentSystemPrompt(system), apiKey }),
       signal: controller.signal,
     })
 
@@ -97,7 +98,7 @@ export async function syncChat(
     res = await fetch('/api/chat/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeader() },
-      body: JSON.stringify({ messages, system, apiKey, maxTokens }),
+      body: JSON.stringify({ messages, system: augmentSystemPrompt(system), apiKey, maxTokens }),
       signal: AbortSignal.timeout(90000),
     })
   } catch (err) {
@@ -113,7 +114,7 @@ export async function syncChat(
   }
 
   const data = await res.json()
-  return data.content
+  return typeof data.content === 'string' ? data.content : ''
 }
 
 export async function uploadPDF(file: File): Promise<{ text: string; pages: number }> {
@@ -121,6 +122,23 @@ export async function uploadPDF(file: File): Promise<{ text: string; pages: numb
   form.append('file', file)
 
   const res = await fetch('/api/upload-pdf', {
+    method: 'POST',
+    body: form,
+  })
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Upload failed' }))
+    throw new Error(err.error || 'Upload failed')
+  }
+
+  return res.json()
+}
+
+export async function uploadDoc(file: File): Promise<{ text: string }> {
+  const form = new FormData()
+  form.append('file', file)
+
+  const res = await fetch('/api/upload-doc', {
     method: 'POST',
     body: form,
   })

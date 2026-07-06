@@ -3,6 +3,7 @@ import { Loader2, PenTool, Upload, FileText, X, BookOpen, AlertCircle, RotateCcw
 import { motion, AnimatePresence } from 'framer-motion'
 import { useStore, useHasApiKey, type GradeResult, type GradeAnnotation } from '../../store/useStore'
 import { syncChat, uploadPDF } from '../../lib/claude'
+import { sanitizeAiProse } from '../../lib/aiText'
 import OdinHead from '../OdinHead'
 
 /* ── Tiny typewriter so Odin's mouth has something to move for ── */
@@ -271,6 +272,13 @@ Respond with ONLY valid JSON, no markdown fences:
       if (!jsonMatch) throw new Error('Odin could not phrase his verdict. Try again.')
       const result: GradeResult = JSON.parse(jsonMatch[0])
       if (!Array.isArray(result.annotations)) result.annotations = []
+      result.odinVerdict = sanitizeAiProse(result.odinVerdict ?? '')
+      result.summary = sanitizeAiProse(result.summary ?? '')
+      result.annotations = result.annotations.map((a) => ({
+        ...a,
+        issue: sanitizeAiProse(a.issue ?? ''),
+        suggestion: sanitizeAiProse(a.suggestion ?? ''),
+      }))
       setGradeResult(result)
     } catch (err: any) {
       setError(err.message || 'Grading failed. Please try again.')

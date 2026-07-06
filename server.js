@@ -18,6 +18,11 @@ import {
   getSubscription,
   getSubscriptionBySubId,
   upsertSubscription,
+  ensureAffiliateSchema,
+  createAffiliateLink,
+  getAffiliateLeaderboard,
+  getAffiliateLink,
+  claimAffiliateSignup,
 } from './server/supabase.js'
 import {
   isStripeConfigured,
@@ -31,6 +36,7 @@ import {
   mapStatus,
   periodEndFrom,
 } from './server/stripe.js'
+import { augmentSystemPrompt } from './server/aiPolicy.js'
 
 dotenv.config()
 
@@ -419,7 +425,7 @@ app.post('/api/chat', async (req, res) => {
     const stream = client.messages.stream({
       model: 'claude-sonnet-4-5',
       max_tokens: 8096,
-      ...(system ? { system } : {}),
+      ...(system ? { system: augmentSystemPrompt(system) } : {}),
       messages,
     })
 
@@ -454,7 +460,7 @@ app.post('/api/chat/tools', async (req, res) => {
     const response = await client.messages.create({
       model: 'claude-sonnet-4-5',
       max_tokens: maxTokens || 1024,
-      ...(system ? { system } : {}),
+      ...(system ? { system: augmentSystemPrompt(system) } : {}),
       messages,
       tools,
     })
@@ -474,7 +480,7 @@ app.post('/api/chat/sync', async (req, res) => {
     const response = await client.messages.create({
       model: 'claude-sonnet-4-5',
       max_tokens: maxTokens || 2048,
-      ...(system ? { system } : {}),
+      ...(system ? { system: augmentSystemPrompt(system) } : {}),
       messages,
     })
     res.json({ content: response.content[0].text })
@@ -493,6 +499,23 @@ app.post('/api/upload-pdf', upload.single('file'), async (req, res) => {
       pages: data.numpages,
       info: data.info,
     })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Word document (.docx) text extraction via mammoth.
+app.post('/api/upload-doc', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' })
+  const name = (req.file.originalname || '').toLowerCase()
+  if (name.endsWith('.doc') && !name.endsWith('.docx')) {
+    return res.status(415).json({
+      error: 'Legacy .doc files are not supported. Please re-save as .docx, .pdf, or .txt.',
+    })
+  }
+  try {
+    const { value } = await mammoth.extractRawText({ buffer: req.file.buffer })
+    res.json({ text: value || '' })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -848,7 +871,11 @@ app.post('/api/stripe/create-checkout-session', async (req, res) => {
   if (error) return res.status(401).json({ error })
   try {
     const user = await getUserFromToken((req.headers['authorization'] || '').slice(7).trim())
-    const origin = req.headers.origin || `${req.protocol}://${req.get('host')}`
+    const origin =
+      req.headers.origin ||
+      (req.headers.referer ? new URL(req.headers.referer).origin : null) ||
+      process.env.PUBLIC_APP_URL ||
+      `${req.protocol}://${req.get('host')}`
     const url = await createCheckoutSession({ userId, email: user?.email, origin })
     res.json({ url })
   } catch (err) {
@@ -898,9 +925,87 @@ app.post('/api/stripe/create-portal-session', async (req, res) => {
     if (!sub?.customer_id) {
       return res.status(400).json({ error: 'No subscription to manage', code: 'no_customer' })
     }
-    const origin = req.headers.origin || `${req.protocol}://${req.get('host')}`
+    const origin =
+      req.headers.origin ||
+      (req.headers.referer ? new URL(req.headers.referer).origin : null) ||
+      process.env.PUBLIC_APP_URL ||
+      `${req.protocol}://${req.get('host')}`
     const url = await createBillingPortalSession({ customerId: sub.customer_id, returnUrl: `${origin}/` })
     res.json({ url })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── Affiliate / invite link tracking ──
+
+app.get('/api/affiliate/leaderboard', async (_req, res) => {
+  if (!isSupabaseConfigured()) return res.json({ enabled: false, entries: [] })
+  try {
+    const entries = await getAffiliateLeaderboard()
+    res.json({ enabled: true, entries })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/affiliate/create', async (req, res) => {
+  if (!isSupabaseConfigured()) return res.status(501).json({ error: 'Affiliate tracking requires Supabase' })
+  const name = (req.body?.name || '').trim()
+  if (!name) return res.status(400).json({ error: 'Name is required' })
+  try {
+    const link = await createAffiliateLink(name)
+    const origin =
+      req.headers.origin ||
+      (req.headers.referer ? new URL(req.headers.referer).origin : null) ||
+      process.env.PUBLIC_APP_URL ||
+      `${req.protocol}://${req.get('host')}`
+    res.json({
+      ...link,
+      url: `${origin}/?ref=${encodeURIComponent(link.code)}`,
+    })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.get('/api/affiliate/:code', async (req, res) => {
+  if (!isSupabaseConfigured()) return res.status(501).json({ error: 'Affiliate tracking requires Supabase' })
+  const code = (req.params.code || '').trim()
+  if (!code) return res.status(400).json({ error: 'Missing code' })
+  try {
+    const link = await getAffiliateLink(code)
+    if (!link) return res.status(404).json({ error: 'Link not found' })
+    const origin =
+      req.headers.origin ||
+      (req.headers.referer ? new URL(req.headers.referer).origin : null) ||
+      process.env.PUBLIC_APP_URL ||
+      `${req.protocol}://${req.get('host')}`
+    res.json({
+      ...link,
+      url: `${origin}/?ref=${encodeURIComponent(link.code)}`,
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.post('/api/affiliate/claim', async (req, res) => {
+  if (!isSupabaseConfigured()) return res.status(501).json({ error: 'Affiliate tracking requires Supabase' })
+  const { userId, error } = await resolveUserId(req)
+  if (error) return res.status(401).json({ error })
+  const code = (req.body?.code || '').trim().toLowerCase()
+  if (!code) return res.status(400).json({ error: 'Missing affiliate code' })
+  try {
+    const token = (req.headers['authorization'] || '').slice(7).trim()
+    const user = await getUserFromToken(token)
+    const result = await claimAffiliateSignup(userId, code, user?.created_at)
+    if (result.ok) {
+      console.log(`[competition] credited sign-up: user=${userId} ref=${code}`)
+    } else {
+      console.log(`[competition] claim skipped: user=${userId} ref=${code} reason=${result.reason}`)
+    }
+    res.json(result)
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -957,6 +1062,12 @@ if (isProduction) {
   app.get('/signup-complete', (_req, res) => {
     res.sendFile(path.join(distPath, 'index.html'))
   })
+  app.get('/affiliate', (_req, res) => {
+    res.redirect(301, '/competition')
+  })
+  app.get('/competition', (_req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'))
+  })
   app.use(express.static(distPath))
   app.get('*', (_req, res) => {
     res.sendFile(path.join(distPath, 'index.html'))
@@ -968,8 +1079,9 @@ app.listen(PORT, async () => {
     try {
       await ensureBuckets()
       await purgeSharedGuestWorkspace()
+      await ensureAffiliateSchema()
     } catch (err) {
-      console.warn('  Supabase bucket setup warning:', err.message)
+      console.warn('  Supabase setup warning:', err.message)
     }
   }
   console.log(`\n  Odin ${isProduction ? 'production' : 'API'} server on http://localhost:${PORT}`)
@@ -981,9 +1093,11 @@ app.listen(PORT, async () => {
     `  Billing: ${
       isPaywallEnabled()
         ? `✓ Stripe paywall enabled${isFreeTrialEnabled() ? ' (with free trial)' : ''}`
-        : isStripeConfigured()
+        : isStripeConfigured() && isProduction
           ? '○ open access (set STRIPE_PAYWALL_ENABLED=true to require subscription)'
-          : '○ open access (set STRIPE_SECRET_KEY + STRIPE_PRICE_ID to enable billing)'
+          : isStripeConfigured()
+            ? '○ open access (paywall disabled in development)'
+            : '○ open access (set STRIPE_SECRET_KEY + STRIPE_PRICE_ID to enable billing)'
     }`
   )
   if (!isProduction) console.log(`\n  Frontend: http://localhost:5173\n`)

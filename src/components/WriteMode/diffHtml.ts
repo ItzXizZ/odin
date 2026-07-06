@@ -42,3 +42,13 @@ export function diffToHtml(diff: DiffChange[]): string {
   paras.push(cur)
   return paras.map((p) => `<p>${p || '<br/>'}</p>`).join('')
 }
+
+/** Inline diff spans only — for replacing a passage inside an existing paragraph. */
+export function diffToInlineHtml(diff: DiffChange[]): string {
+  let html = ''
+  for (const part of diff) {
+    const cls: 'insert' | 'delete' | null = part.added ? 'insert' : part.removed ? 'delete' : null
+    html += wrapPiece(part.value, cls)
+  }
+  return html
+}

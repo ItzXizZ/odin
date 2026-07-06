@@ -1,11 +1,20 @@
 import { nanoid } from 'nanoid'
 
+export interface AgentActivityStep {
+  id: string
+  text: string
+  status: 'running' | 'done'
+}
+
 export interface WriteChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
   suggestionId?: string
-  kind?: 'style'
+  kind?: 'style' | 'agent'
+  /** Cursor-style step list shown while the agent works. */
+  activity?: AgentActivityStep[]
+  editsApplied?: number
 }
 
 export interface WriteChatThread {

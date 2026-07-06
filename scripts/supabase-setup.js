@@ -26,6 +26,21 @@ create table if not exists public.subscriptions (
   updated_at timestamptz not null default now()
 );
 alter table public.subscriptions enable row level security;
+
+create table if not exists public.affiliate_links (
+  code text primary key,
+  name text not null,
+  signup_count integer not null default 0,
+  created_at timestamptz not null default now()
+);
+alter table public.affiliate_links enable row level security;
+
+create table if not exists public.affiliate_signups (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  affiliate_code text not null references public.affiliate_links(code),
+  signed_up_at timestamptz not null default now()
+);
+alter table public.affiliate_signups enable row level security;
 `
 
 function projectRef() {
@@ -56,6 +71,7 @@ async function main() {
     throw new Error(`Management API error ${res.status}: ${text.slice(0, 500)}`)
   }
   console.log('✓ subscriptions table created (or already existed).')
+  console.log('✓ affiliate_links + affiliate_signups tables created (or already existed).')
 }
 
 main().catch((err) => {

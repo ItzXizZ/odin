@@ -27,6 +27,8 @@ import {
   runOnboardingCommand,
   setOnboardingTopic,
   setOnboardingActive,
+  hasVoiceNodeExpanded,
+  resetVoiceTutorialState,
 } from './onboarding'
 
 export type Placement = 'top' | 'bottom' | 'left' | 'right' | 'center'
@@ -112,6 +114,12 @@ export interface TourSnapshot {
   linkedAdv: number
   /** How many blocks are still streaming/generating right now. */
   loadingNodes: number
+  /** Uploaded writing samples in the Voice tab. */
+  voiceDocs: number
+  /** Voice principles (neurons) on the network. */
+  voiceRules: number
+  /** User has expanded a voice node to read its details. */
+  voiceNodeExpanded: boolean
 }
 
 export function computeSnapshot(): TourSnapshot {
@@ -127,6 +135,9 @@ export function computeSnapshot(): TourSnapshot {
     embeds: nodes.filter((n) => n.data.nodeKind === 'embed').length,
     linkedAdv: ctx.linkedAdventureIds?.length ?? 0,
     loadingNodes: nodes.filter((n) => n.data.isLoading).length,
+    voiceDocs: s.voiceDocuments.length,
+    voiceRules: s.styleRules.length,
+    voiceNodeExpanded: hasVoiceNodeExpanded(),
   }
 }
 
@@ -188,6 +199,8 @@ export interface TourStep {
    * snapshot, return true once the required action has happened.
    */
   advanceWhen?: (entry: TourSnapshot, live: TourSnapshot) => boolean
+  /** Auto-advance after this many ms on the step (e.g. let a stream start). */
+  advanceAfterMs?: number
   /** Auto-advance the moment advanceWhen flips true (no click needed). */
   autoAdvance?: boolean
   /** Hide the Next button (the step must be completed via action/CTA). */
@@ -232,12 +245,11 @@ const TOUR_STEPS: TourStep[] = [
   {
     id: 'research-wait',
     tab: 'exploration',
-    say: "An excellent question. Allow the response to reach its full depth. I'll remain here until it's complete.",
-    // Only move on once nothing is still generating.
-    advanceWhen: (_entry, live) => live.loadingNodes === 0,
+    say: "An excellent question. Watch the answer take shape — I'll move on once it has begun.",
+    advanceAfterMs: 3000,
     autoAdvance: true,
     hideNext: true,
-    waitText: 'Awaiting the full response…',
+    waitText: 'Composing your answer…',
   },
   {
     id: 'explore-links',
@@ -337,11 +349,45 @@ const TOUR_STEPS: TourStep[] = [
     cta: { label: 'Open Voice', run: () => useStore.getState().setActiveTab('stylism') },
   },
   {
+    id: 'style-upload',
+    tab: 'stylism',
+    target: '[data-tour="voice-upload"]',
+    placement: 'right',
+    onEnter: () => useStore.getState().setActiveTab('stylism'),
+    say: "This is your Voice — a living map of how you write. Click the + at the center and upload something you're proud of: an essay, chapter, or article. Odin reads your prose and distills your cadence, word choices, and habits into principles that appear as nodes on this canvas.",
+    advanceWhen: (entry, live) => live.voiceDocs > entry.voiceDocs,
+    autoAdvance: true,
+    hideNext: true,
+    waitText: 'Upload a writing sample…',
+  },
+  {
+    id: 'style-wait-nodes',
+    tab: 'stylism',
+    skipWhen: () => !hasUsableKey(),
+    say: "Excellent sample. Odin is reading it now — watch as voice principles bubble onto the map, each one a distilled habit from your prose.",
+    advanceWhen: (entry, live) => live.voiceRules > entry.voiceRules,
+    autoAdvance: true,
+    hideNext: true,
+    waitText: 'Distilling your voice…',
+  },
+  {
+    id: 'style-explore-node',
+    tab: 'stylism',
+    target: '[data-tour="voice-node"]',
+    placement: 'right',
+    skipWhen: () => useStore.getState().styleRules.length === 0,
+    say: "Your first principle has arrived. Tap the node to expand it — inside you'll find the rule Odin learned, examples of what sounds like you versus what doesn't, and which document it came from. Use the arrows to cycle through sections.",
+    advanceWhen: (_entry, live) => live.voiceNodeExpanded,
+    autoAdvance: true,
+    hideNext: true,
+    waitText: 'Tap a voice node to explore it…',
+  },
+  {
     id: 'style-finish',
     tab: 'stylism',
     floatCoach: true,
     coachSide: 'left',
-    say: "This is your Voice, a living network of principles learned from every correction you make. Over time, Odin writes indistinguishably from you. Research. Compose. Refine. You are ready.",
+    say: "Every correction you make in Compose grows this network further. Over time, Odin writes indistinguishably from you. Research. Compose. Refine. You are ready.",
     nextLabel: 'Complete',
   },
 ]
@@ -392,6 +438,7 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
   const [stepIndex, setStepIndex] = useState(0)
   const [canAdvance, setCanAdvance] = useState(false)
   const entrySnapRef = useRef<TourSnapshot | null>(null)
+  const stepEnteredAtRef = useRef(Date.now())
   const suggestionReqRef = useRef(0)
 
   const enterStep = useCallback((i: number) => {
@@ -399,6 +446,7 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
     if (!step) return
     if (step.tab) useStore.getState().setActiveTab(step.tab)
     entrySnapRef.current = computeSnapshot()
+    stepEnteredAtRef.current = Date.now()
     setCanAdvance(false)
     // Defer onEnter so the target mode has a chance to mount/register commands.
     if (step.onEnter) {
@@ -408,6 +456,7 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
 
   const start = useCallback(() => {
     markOnboarded()
+    resetVoiceTutorialState()
     setOnboardingActive(true)
     setField(null)
     setSuggestions([])
@@ -422,6 +471,7 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
     markOnboarded()
     markOnboardingFinished()
     setOnboardingActive(false)
+    resetVoiceTutorialState()
     setActive(false)
     setCanAdvance(false)
   }, [])
@@ -480,13 +530,22 @@ export function TutorialProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!active || phase !== 'tour') return
     const step = TOUR_STEPS[stepIndex]
-    if (!step?.advanceWhen) {
+    if (!step?.advanceWhen && !step?.advanceAfterMs) {
       setCanAdvance(true)
       return
     }
     const tick = () => {
       const entry = entrySnapRef.current ?? computeSnapshot()
-      const done = step.advanceWhen!(entry, computeSnapshot())
+      const live = computeSnapshot()
+      const timeDone = step.advanceAfterMs
+        ? Date.now() - stepEnteredAtRef.current >= step.advanceAfterMs
+        : false
+      const condDone = step.advanceWhen ? step.advanceWhen(entry, live) : false
+      const done = step.advanceWhen && step.advanceAfterMs
+        ? condDone || timeDone
+        : step.advanceAfterMs
+          ? timeDone
+          : condDone
       if (done) {
         setCanAdvance(true)
         if (step.autoAdvance) nextRef.current()

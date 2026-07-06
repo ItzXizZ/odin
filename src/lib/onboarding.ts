@@ -41,10 +41,28 @@ export function getOnboardingTopic(): string | null {
 }
 export function setOnboardingActive(active: boolean): void {
   onboardingActive = active
-  if (!active) onboardingTopic = null
+  if (!active) {
+    onboardingTopic = null
+    resetVoiceTutorialState()
+  }
 }
 export function isOnboardingActive(): boolean {
   return onboardingActive
+}
+
+/* ── Voice tour gates (expanded node is local React state in StylismMode) ── */
+let voiceNodeExpanded = false
+
+export function markVoiceNodeExpanded(): void {
+  voiceNodeExpanded = true
+}
+
+export function hasVoiceNodeExpanded(): boolean {
+  return voiceNodeExpanded
+}
+
+export function resetVoiceTutorialState(): void {
+  voiceNodeExpanded = false
 }
 
 /** Register an imperative handler. Returns an unregister function. */

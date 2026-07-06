@@ -56,9 +56,13 @@ export function isStripeConfigured() {
  * Whether signed-in users must subscribe (or start a card trial) before using
  * the studio. Stripe can stay configured for optional billing while the paywall
  * is off — set STRIPE_PAYWALL_ENABLED=true to require payment again.
+ *
+ * The paywall is never enforced outside production so local `npm run dev` stays
+ * open even when Stripe keys are present in .env.
  */
 export function isPaywallEnabled() {
   if (!isStripeConfigured()) return false
+  if (process.env.NODE_ENV !== 'production') return false
   return parseEnvBool(process.env.STRIPE_PAYWALL_ENABLED, false)
 }
 

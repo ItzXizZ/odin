@@ -12,11 +12,11 @@ export function workspaceExplorationWeight(json: string): number {
   }
 }
 
-/** Voice network size in a persisted workspace blob. */
+/** Voice network size in a persisted workspace blob (user-learned rules only). */
 export function workspaceStyleRulesCount(json: string): number {
   try {
-    const state = JSON.parse(json) as { styleRules?: unknown[] }
-    return state.styleRules?.length ?? 0
+    const state = JSON.parse(json) as { styleRules?: { source?: string }[] }
+    return (state.styleRules ?? []).filter((r) => r.source === 'ai' || r.source === 'user').length
   } catch {
     return 0
   }

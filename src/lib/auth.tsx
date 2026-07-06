@@ -29,6 +29,14 @@ import {
   oauthSignupCompleteUrl,
   trackSignupConversion,
 } from './oauthRedirect'
+import { claimAffiliateReferral } from './affiliate'
+import {
+  captureReferralFromUrl,
+  clearStoredReferralCode,
+  getStoredReferralCode,
+  persistReferralCode,
+  restorePendingReferralCode,
+} from './referral'
 
 interface AuthState {
   /** Whether Google auth is configured (and therefore a login is required). */
@@ -87,8 +95,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function signInWithGoogle(options?: { afterSignup?: boolean }) {
     if (!supabase) return
-    // New sign-ups land on /signup-complete so Google Ads can count conversions on
-    // a stable URL. Returning sign-ins go back to "/".
+    captureReferralFromUrl()
+    const ref = getStoredReferralCode()
+    if (ref) persistReferralCode(ref)
+
     const redirectTo = options?.afterSignup
       ? oauthSignupCompleteUrl()
       : oauthSignInUrl()
@@ -132,12 +142,68 @@ export function SignupCompleteHandler() {
   const { ready, user } = useAuth()
 
   useEffect(() => {
-    if (!ready || !isSignupCompleteLanding()) return
-    if (user) {
-      trackSignupConversion(user)
-    }
+    if (!ready || !user || !isSignupCompleteLanding()) return
+    trackSignupConversion(user)
     clearSignupCompleteLandingUrl()
   }, [ready, user])
 
+  return null
+}
+
+/** Attribute a new sign-up to a stored ?ref= code once auth finishes. */
+export function ReferralClaimHandler() {
+  useEffect(() => {
+    if (!supabase) return
+
+    const { data: sub } = supabase.auth.onAuthStateChange((event, sess) => {
+      if (!sess?.user || !sess.access_token) return
+      if (event !== 'SIGNED_IN' && event !== 'INITIAL_SESSION') return
+
+      restorePendingReferralCode()
+
+      const ref = getStoredReferralCode()
+      if (!ref) return
+
+      const userId = sess.user.id
+      const doneKey = `odin-ref-claimed-${userId}`
+      if (sessionStorage.getItem(doneKey)) return
+
+      const accountAge = Date.now() - new Date(sess.user.created_at).getTime()
+      const oneHour = 60 * 60 * 1000
+
+      if (event === 'INITIAL_SESSION' && accountAge > oneHour) {
+        if (accountAge > 7 * 24 * 60 * 60 * 1000) clearStoredReferralCode()
+        return
+      }
+
+      if (event !== 'SIGNED_IN' && accountAge > oneHour) return
+
+      void (async () => {
+        let retries = 0
+        while (retries < 5) {
+          const result = await claimAffiliateReferral(ref, sess.access_token)
+          if (result.ok || result.reason === 'already_claimed' || result.reason === 'too_late') {
+            sessionStorage.setItem(doneKey, '1')
+            clearStoredReferralCode()
+            return
+          }
+          if (result.reason !== 'unauthorized') return
+          retries++
+          await new Promise((r) => setTimeout(r, 300 * retries))
+        }
+      })()
+    })
+
+    return () => sub.subscription.unsubscribe()
+  }, [])
+
+  return null
+}
+
+/** Capture ?ref= from invite links on any page load. */
+export function ReferralCapture() {
+  useEffect(() => {
+    captureReferralFromUrl()
+  }, [])
   return null
 }

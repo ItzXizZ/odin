@@ -7,6 +7,49 @@ export function stripCodeFences(text: string): string {
   return t
 }
 
+/** Appended to every AI system prompt — hard ban on em/en dash punctuation. */
+export const ODIN_GLOBAL_SYSTEM_SUFFIX = `
+
+GLOBAL OUTPUT RULE (mandatory, zero exceptions): Never use em dashes (—) or en dashes (–) as punctuation in any output you generate. Use commas, periods, semicolons, parentheses, or colons instead. This applies to every string field, message, note, edit, and prose block you emit.`
+
+/** Inject the global em-dash ban into a system prompt (idempotent). */
+export function augmentSystemPrompt(system: string): string {
+  const base = system?.trim() ?? ''
+  if (base.includes('GLOBAL OUTPUT RULE')) return base
+  return base + ODIN_GLOBAL_SYSTEM_SUFFIX
+}
+
+/**
+ * Remove em/en dash punctuation from AI-generated prose.
+ * Does not touch hyphenated words (e.g. "well-known").
+ * Preserves newlines so Markdown structure (headings, lists) stays intact.
+ */
+export function stripEmDashes(text: string): string {
+  return text
+    .replace(/[ \t]*[—–][ \t]*/g, ', ')
+    .replace(/[—–]/g, ', ')
+    .replace(/,[ \t]*,+/g, ', ')
+    .replace(/,[ \t]*\./g, '.')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
+/**
+ * Re-break markdown that lost paragraph breaks when whitespace was collapsed.
+ * Repairs already-persisted adventure blocks without requiring a re-query.
+ */
+export function repairMarkdownLineBreaks(text: string): string {
+  return text
+    .replace(/([^\n])\s+(#{1,6}\s)/g, '$1\n\n$2')
+    .replace(/([^\n])\s+(-\s+)/g, '$1\n$2')
+    .replace(/([^\n])\s+(\*\s+)/g, '$1\n$2')
+}
+
+/** Sanitize any AI-authored prose before display or insertion into the doc. */
+export function sanitizeAiProse(text: string): string {
+  return stripEmDashes(text)
+}
+
 const MARKDOWNISH =
   /(^|\n)#{1,6}\s|(^|\n)#{1,6}$|\*\*[^*\n]+\*\*|__[^_\n]+__|(^|\n)\s*[-*+]\s+|(^|\n)\s*\d+[.)]\s+|`[^`\n]+`|(^|\n)>\s|(^|\n)(-{3,}|\*{3,}|_{3,})\s*$|\[[^\]\n]+\]\([^)\n]+\)/
 
@@ -17,7 +60,9 @@ export function looksLikeMarkdown(text: string): boolean {
 
 /** Normalize a raw model response before parsing or diffing. */
 export function normalizeAiResponse(raw: string): string {
-  return stripCodeFences(raw)
+  const stripped = stripCodeFences(raw)
+  if (looksLikeJsonResponse(stripped)) return stripped
+  return sanitizeAiProse(stripped)
 }
 
 /** Turn model escape sequences into real whitespace after JSON.parse. */
