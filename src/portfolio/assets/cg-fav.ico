@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/assets/logos/darkmini.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CommonGap - Gap Year at YC Startups & Top Tech Companies</title>
+    <meta name="description" content="The gap year for the new age. Gain real technical experience at exclusive YC startups and top companies. For ambitious high schoolers ready to build their future." />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <script type="module" crossorigin src="/assets/index-C-h1BBJP.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CNKD76tg.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+

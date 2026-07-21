@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { LogOut } from 'lucide-react'
+import { LogOut, Swords } from 'lucide-react'
 import { useAuth } from '../lib/auth'
+import amcLogo from '../amc/assets/amc-logo.png'
 
 export default function UserMenu() {
   const { authEnabled, user, signOut } = useAuth()
@@ -108,6 +109,58 @@ export default function UserMenu() {
               )}
             </div>
             <div style={{ height: 1, background: 'rgba(0,0,0,0.07)', margin: '2px 0 6px' }} />
+            <a
+              href="/arena"
+              onClick={() => setOpen(false)}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '9px 10px',
+                borderRadius: 9,
+                background: 'transparent',
+                cursor: 'pointer',
+                fontSize: 13.5,
+                fontWeight: 600,
+                color: 'rgba(40,40,40,0.9)',
+                textAlign: 'left',
+                textDecoration: 'none',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(96,132,255,0.1)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              <Swords size={16} />
+              Enter the Arena
+            </a>
+            <a
+              href="/amc"
+              onClick={() => setOpen(false)}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '9px 10px',
+                borderRadius: 9,
+                background: 'transparent',
+                cursor: 'pointer',
+                fontSize: 13.5,
+                fontWeight: 600,
+                color: 'rgba(40,40,40,0.9)',
+                textAlign: 'left',
+                textDecoration: 'none',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(185,125,16,0.12)')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              <img
+                src={amcLogo}
+                alt=""
+                style={{ height: 16, width: 'auto', mixBlendMode: 'multiply' }}
+              />
+              AMC Math Coach
+            </a>
             <button
               onClick={() => {
                 setOpen(false)

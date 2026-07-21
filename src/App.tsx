@@ -6,6 +6,10 @@ import TrialPaywall from './components/TrialPaywall'
 import IphoneUnsupportedScreen, { isIPhoneDevice } from './components/IphoneUnsupportedScreen'
 import { AuthProvider, ReferralCapture, ReferralClaimHandler, SignupCompleteHandler, useAuth } from './lib/auth'
 import CompetitionLeaderboard from './components/CompetitionLeaderboard'
+import ArenaApp from './arena/ArenaApp'
+import MathApp from './math/MathApp'
+import AmcApp from './amc/AmcApp'
+import PortfolioApp from './portfolio/PortfolioApp'
 import { confirmCheckout, fetchSubscriptionStatus } from './lib/subscription'
 import { trackTrialConversion } from './lib/conversion'
 import { clearOnboardingFinished, hasFinishedOnboarding, onOnboardingFinished } from './lib/onboarding'
@@ -373,6 +377,25 @@ function Gate() {
 }
 
 export default function App() {
+  const pathname = typeof window !== 'undefined' ? window.location.pathname : ''
+  const isPortfolioPage =
+    pathname === '/ethan' ||
+    pathname === '/ethan/' ||
+    pathname === '/me' ||
+    pathname === '/portfolio'
+
+  // Personal site stays available on iPhone (product studio does not).
+  if (isPortfolioPage) {
+    return (
+      <div
+        className="h-screen w-screen overflow-hidden flex flex-col"
+        style={{ background: 'rgb(215,215,215)' }}
+      >
+        <PortfolioApp />
+      </div>
+    )
+  }
+
   if (isIPhoneDevice()) {
     return (
       <div
@@ -385,8 +408,22 @@ export default function App() {
   }
 
   const isCompetitionPage =
-    typeof window !== 'undefined' &&
-    (window.location.pathname === '/competition' || window.location.pathname === '/affiliate')
+    pathname === '/competition' || pathname === '/affiliate'
+  const isArenaPage = pathname === '/arena' || pathname.startsWith('/arena/')
+  const isMathPage = pathname === '/math' || pathname.startsWith('/math/')
+  const isAmcPage = pathname === '/amc' || pathname.startsWith('/amc/')
+
+  // AMC Math Coach has its own username/password accounts — no Supabase gate.
+  if (isAmcPage) {
+    return (
+      <div
+        className="h-screen w-screen overflow-hidden flex flex-col"
+        style={{ background: 'rgb(215,215,215)' }}
+      >
+        <AmcApp />
+      </div>
+    )
+  }
 
   return (
     <div
@@ -396,7 +433,11 @@ export default function App() {
       <AuthProvider>
         <ReferralCapture />
         <ReferralClaimHandler />
-        {isCompetitionPage ? (
+        {isMathPage ? (
+          <MathApp />
+        ) : isArenaPage ? (
+          <ArenaApp />
+        ) : isCompetitionPage ? (
           <CompetitionLeaderboard />
         ) : (
           <>

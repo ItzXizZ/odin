@@ -23,6 +23,11 @@ export function isSupabaseConfigured() {
   return Boolean(url && secret)
 }
 
+/** Service-role client for other server modules (null when not configured). */
+export function getServiceClient() {
+  return getClient()
+}
+
 let client = null
 function getClient() {
   if (!isSupabaseConfigured()) return null

@@ -13,6 +13,7 @@ import ReactFlow, {
   type Edge,
   type ReactFlowInstance,
   BackgroundVariant,
+  ReactFlowProvider,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { Plus, Trash2, Sparkles, Maximize2, ChevronLeft, RefreshCw, Loader2 } from 'lucide-react'
@@ -27,6 +28,7 @@ import {
 import { researchQuery } from '../../lib/research'
 import ExplorationNode from './ExplorationNode'
 import FloatingEdge from './FloatingEdge'
+import MathLayer from './MathLayer'
 import { sanitizeNodesForStore } from './nodePersistence'
 import {
   mergeEmbedScrollIntoNodes,
@@ -176,8 +178,9 @@ function buildMessageChain(
   return chain
 }
 
-export default function ExplorationMode() {
+export default function ExplorationMode({ mathMode = false }: { mathMode?: boolean } = {}) {
   const hasApiKey = useHasApiKey()
+  const [mathHasContent, setMathHasContent] = useState(false)
   const {
     adventures,
     activeAdventureId,
@@ -1731,7 +1734,7 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
     [nodes]
   )
 
-  return (
+  const board = (
     <div className="h-full flex relative overflow-hidden">
       {/* Whiteboard — always fills full width */}
       <div className="flex-1 relative" ref={flowWrapperRef}>
@@ -1866,7 +1869,8 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
           See all
         </button>
 
-        {/* Prompt input overlay */}
+        {/* Prompt input overlay — hidden in math mode (MathLayer has its own bottom bar) */}
+        {!mathMode && (
         <div className="exploration-prompt-bar absolute bottom-4 left-1/2 -translate-x-1/2 w-full max-w-xl px-4" data-tour="exploration-prompt">
           {pendingExcerpt && (suggestionsLoading || excerptSuggestions.length > 0) && (
             <div className="exp-suggest-pills card">
@@ -1935,8 +1939,9 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
             </p>
           )}
         </div>
+        )}
 
-        {nodes.length === 0 && (
+        {nodes.length === 0 && !(mathMode && mathHasContent) && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center">
               <p className="font-display text-2xl text-black/50 tracking-tight">Begin your adventure</p>
@@ -1946,6 +1951,8 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
             </div>
           </div>
         )}
+
+        {mathMode && <MathLayer adventureId={activeAdventureId} onHasContentChange={setMathHasContent} />}
       </div>
 
       {/* Sources drawer — slides in from the right */}
@@ -1983,4 +1990,8 @@ ${context ? `\n=== BACKGROUND CONTEXT ===\n${context.slice(0, 3000)}` : ''}`
       </motion.div>
     </div>
   )
+
+  // Math mode needs a shared ReactFlow provider so the drawing/hint overlay can
+  // use flow hooks and portal ink into the viewport from outside <ReactFlow>.
+  return mathMode ? <ReactFlowProvider>{board}</ReactFlowProvider> : board
 }

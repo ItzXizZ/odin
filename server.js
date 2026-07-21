@@ -37,6 +37,11 @@ import {
   periodEndFrom,
 } from './server/stripe.js'
 import { augmentSystemPrompt } from './server/aiPolicy.js'
+import { registerArenaRoutes, ensureArenaSchema } from './server/arena.js'
+import { registerMathRoutes } from './server/math.js'
+import { registerRecognizeRoutes } from './server/recognize.js'
+import { registerTtsRoutes } from './server/tts.js'
+import { registerAccountRoutes } from './server/accounts.js'
 
 dotenv.config()
 
@@ -51,7 +56,19 @@ const app = express()
 const PORT = process.env.PORT || 3001
 
 if (!isProduction) {
-  app.use(cors({ origin: 'http://localhost:5173' }))
+  // Vite bumps to 5174/5175 when 5173 is already taken by a stale process.
+  app.use(
+    cors({
+      origin: [
+        'http://localhost:5173',
+        'http://localhost:5174',
+        'http://localhost:5175',
+        'http://127.0.0.1:5173',
+        'http://127.0.0.1:5174',
+        'http://127.0.0.1:5175',
+      ],
+    })
+  )
 }
 
 // Stripe webhook MUST receive the raw, unparsed body for signature verification,
@@ -155,6 +172,21 @@ app.get('/api/health', (req, res) => {
       : null,
   })
 })
+
+// ── Odin Arena (viral game surface) ──
+registerArenaRoutes(app)
+
+// ── Odin Math (whiteboard hint tutor) ──
+registerMathRoutes(app)
+
+// ── Handwriting → LaTeX recognition (MyScript iink proxy) ──
+registerRecognizeRoutes(app)
+
+// ── AMC Math Coach accounts (username/password) ──
+registerAccountRoutes(app)
+
+// ── ElevenLabs TTS (Odin voice) ──
+registerTtsRoutes(app)
 
 function normalizeUrl(url) {
   try {
@@ -1068,6 +1100,15 @@ if (isProduction) {
   app.get('/competition', (_req, res) => {
     res.sendFile(path.join(distPath, 'index.html'))
   })
+  app.get('/math', (_req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'))
+  })
+  app.get(['/amc', '/amc/*'], (_req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'))
+  })
+  app.get(['/ethan', '/me', '/portfolio'], (_req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'))
+  })
   app.use(express.static(distPath))
   app.get('*', (_req, res) => {
     res.sendFile(path.join(distPath, 'index.html'))
@@ -1083,6 +1124,11 @@ app.listen(PORT, async () => {
     } catch (err) {
       console.warn('  Supabase setup warning:', err.message)
     }
+  }
+  try {
+    await ensureArenaSchema()
+  } catch (err) {
+    console.warn('  Arena setup warning:', err.message)
   }
   console.log(`\n  Odin ${isProduction ? 'production' : 'API'} server on http://localhost:${PORT}`)
   console.log(`  API key: ${process.env.ANTHROPIC_API_KEY ? '✓ loaded from .env' : '✗ not set (use in-app settings)'}`)

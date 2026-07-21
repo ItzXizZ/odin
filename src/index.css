@@ -1080,6 +1080,53 @@
   50% { box-shadow: 0 0 0 12px rgba(30, 30, 30, 0.05); }
 }
 
+/* ── Math board: same spotlight on student ink ── */
+.math-work-spot {
+  position: absolute;
+  pointer-events: none;
+  z-index: 4;
+  border-radius: 12px;
+}
+
+.math-work-spot-label {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  max-width: 220px;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: rgba(30, 30, 30, 0.82);
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+
+.math-work-spot--focus::after {
+  animation-duration: 1.35s;
+}
+
+.math-work-spot--error {
+  outline-color: rgba(153, 27, 27, 0.78);
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.92),
+    0 0 22px 7px rgba(153, 27, 27, 0.18);
+}
+
+.math-work-spot--confirmed {
+  opacity: 0.92;
+}
+
+.math-work-spot--confirmed::after {
+  animation: none;
+}
+
 .tour-pop {
   pointer-events: auto;
   background: rgba(255, 255, 255, 0.96);
@@ -7999,4 +8046,1324 @@ kbd {
   font-size: 0.8rem;
   line-height: 1.45;
   color: rgba(55, 55, 62, 0.52);
+}
+
+/* ── Math tutor on-canvas overlays (tutorial-style coach) ── */
+@keyframes math-highlight-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.72; }
+}
+
+/* Coach = talking head + frosted speech bubble, same look as the product tour. */
+.math-coach {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.math-coach-avatar {
+  position: relative;
+  flex-shrink: 0;
+  pointer-events: auto;
+}
+
+.math-coach-bubble {
+  position: relative;
+  pointer-events: auto;
+  min-width: 250px;
+  max-height: min(480px, 62vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0.55rem;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: linear-gradient(
+    -75deg,
+    rgba(255, 255, 255, 0.22),
+    rgba(255, 255, 255, 0.48),
+    rgba(255, 255, 255, 0.2)
+  );
+  box-shadow:
+    inset 0 0.125em 0.125em rgba(255, 255, 255, 0.55),
+    inset 0 -0.05em 0.08em rgba(0, 0, 0, 0.04),
+    0 24px 60px rgba(0, 0, 0, 0.22),
+    0 2px 8px rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+}
+/* Speech-bubble tail pointing back at the tutor's face */
+.math-coach-bubble::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 22px;
+  width: 14px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.42);
+  border-left: 1px solid rgba(255, 255, 255, 0.5);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.35);
+  transform: rotate(45deg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.math-coach-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.15rem 0.35rem 0.1rem;
+}
+
+.math-coach-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+  letter-spacing: -0.01em;
+  color: rgba(25, 25, 30, 0.92);
+}
+
+.math-coach-type {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.math-coach-scroll {
+  flex: 1;
+  min-height: 0;
+  max-height: min(340px, 48vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  margin-top: 0.28rem;
+  padding: 0.55rem 0.65rem 0.6rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.math-coach-body {
+  max-height: min(280px, 38vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.math-coach-footer {
+  flex-shrink: 0;
+  margin-top: 0.4em;
+  padding: 0.45em 0.2em 0.15em;
+  border-top: 1px solid rgba(255, 255, 255, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Quiet "where you are" panel — replaces the old orange ✓ / → note lines. */
+.math-coach-context {
+  margin-top: 0.42rem;
+  padding: 0.42rem 0.55rem 0.46rem;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.035);
+  border: 1px solid rgba(15, 23, 42, 0.05);
+}
+.math-coach-context-label {
+  display: block;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(30, 41, 59, 0.38);
+  margin-bottom: 0.18rem;
+}
+.math-coach-context-line {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  font-weight: 500;
+  color: rgba(30, 41, 59, 0.72);
+}
+.math-coach-context-line + .math-coach-context-line {
+  margin-top: 0.22rem;
+}
+.math-coach-context-line--dim {
+  color: rgba(30, 41, 59, 0.52);
+}
+.math-coach-context-line .katex {
+  font-size: 1em;
+}
+
+/* Drag grip dots in the bubble header. */
+.math-coach-grip {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+  opacity: 0.35;
+}
+.math-coach-grip span {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: rgba(30, 41, 59, 0.8);
+}
+
+.math-coach-say {
+  margin: 0.4rem 0 0;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: rgba(40, 40, 46, 0.9);
+  white-space: pre-wrap;
+}
+.math-coach-say .katex {
+  font-size: 1.04em;
+}
+
+.math-coach-waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: rgba(30, 41, 59, 0.5);
+  white-space: nowrap;
+}
+
+.math-coach-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: rgba(30, 30, 30, 0.75);
+  animation: odin-caret-blink 0.9s step-end infinite;
+}
+
+.math-coach-solve {
+  margin-top: 0.45rem;
+  max-height: 340px;
+  overflow-y: auto;
+  font-size: 0.86rem;
+}
+
+/* Faded trail left behind by the moving spotlight. */
+.math-spot-trail {
+  box-shadow: inset 0 0 0 2px rgba(13, 148, 136, 0.4);
+  background: rgba(13, 148, 136, 0.07);
+}
+.math-spot-trail--focus,
+.math-spot-trail--suggestion {
+  box-shadow: inset 0 0 0 2px rgba(180, 83, 9, 0.38);
+  background: rgba(217, 119, 6, 0.07);
+}
+.math-spot-trail--error {
+  box-shadow: inset 0 0 0 2px rgba(185, 28, 28, 0.42);
+  background: rgba(220, 38, 38, 0.07);
+}
+.math-spot-trail-label {
+  position: absolute;
+  left: 6px;
+  top: -20px;
+  font-size: 0.62rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: rgba(30, 30, 30, 0.55);
+  background: rgba(255, 255, 255, 0.85);
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid rgba(0, 0, 0, 0.07);
+}
+
+/* Ink highlight rings from [[highlight|…]] / [[focus|…]] tool markers. */
+.math-ink-highlight {
+  border-radius: 12px;
+  pointer-events: none;
+  animation: math-highlight-pulse 2.4s ease-in-out infinite;
+}
+.math-ink-highlight--focus,
+.math-ink-highlight--suggestion {
+  background: rgba(251, 191, 36, 0.16);
+  box-shadow: inset 0 0 0 2.5px rgba(245, 158, 11, 0.55), 0 0 28px rgba(251, 191, 36, 0.22);
+}
+.math-ink-highlight--confirmed {
+  background: rgba(13, 148, 136, 0.1);
+  box-shadow: inset 0 0 0 2.5px rgba(13, 148, 136, 0.45), 0 0 22px rgba(13, 148, 136, 0.15);
+}
+.math-ink-highlight--error {
+  background: rgba(239, 68, 68, 0.1);
+  box-shadow: inset 0 0 0 2.5px rgba(220, 38, 38, 0.5), 0 0 22px rgba(239, 68, 68, 0.15);
+}
+.math-ink-highlight-label {
+  position: absolute;
+  left: 8px;
+  top: -18px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  white-space: nowrap;
+  color: rgba(120, 53, 15, 0.85);
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 999px;
+  padding: 0.12rem 0.5rem;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* Answer box in blank space — a quiet rounded rectangle, like ruled paper. */
+.math-write-zone {
+  border: 1.5px dashed rgba(51, 65, 85, 0.45);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.35);
+  animation: math-write-pulse 2.6s ease-in-out infinite;
+}
+.math-write-zone--filled {
+  border-color: rgba(51, 65, 85, 0.55);
+  border-style: solid;
+  background: rgba(255, 255, 255, 0.25);
+  animation: none;
+}
+.math-write-zone--checking {
+  border-color: rgba(51, 65, 85, 0.35);
+  border-style: solid;
+  background: rgba(255, 255, 255, 0.2);
+  animation: none;
+}
+@keyframes math-write-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(51, 65, 85, 0.14); }
+  50% { box-shadow: 0 0 0 10px rgba(51, 65, 85, 0.02); }
+}
+.math-write-zone-label {
+  position: absolute;
+  left: 12px;
+  top: -11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 420px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: rgba(51, 65, 85, 0.85);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(51, 65, 85, 0.16);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+}
+.math-write-zone--filled .math-write-zone-label {
+  color: rgba(4, 120, 87, 0.9);
+  border-color: rgba(5, 150, 105, 0.25);
+}
+.math-write-zone--checking .math-write-zone-label {
+  color: rgba(51, 65, 85, 0.75);
+  border-color: rgba(51, 65, 85, 0.2);
+}
+.math-write-zone--done {
+  border-color: rgba(5, 150, 105, 0.5);
+  border-style: solid;
+  background: rgba(5, 150, 105, 0.04);
+  animation: none;
+}
+.math-write-zone--done .math-write-zone-label {
+  color: rgba(4, 120, 87, 0.9);
+  border-color: rgba(5, 150, 105, 0.25);
+}
+
+/* Submit ✓ pinned to the box's bottom-right corner (screen-space layer). */
+.math-write-zone-check {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(51, 65, 85, 0.25);
+  background: rgba(255, 255, 255, 0.96);
+  color: rgba(51, 65, 85, 0.4);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
+  cursor: default;
+  pointer-events: auto;
+  transition: transform 0.15s ease, color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.math-write-zone-check.is-ready {
+  background: #059669;
+  border-color: #047857;
+  color: #fff;
+  cursor: pointer;
+  animation: math-check-pop 0.3s ease;
+}
+.math-write-zone-check.is-ready:hover {
+  transform: scale(1.12);
+}
+@keyframes math-check-pop {
+  0% { transform: scale(0.6); }
+  70% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+
+.math-coach-clarifications {
+  margin-top: 0.5em;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55em;
+}
+
+.math-coach-clarify {
+  padding: 0.45em 0.55em;
+  border-radius: 10px;
+  background: rgba(13, 148, 136, 0.06);
+  border: 1px solid rgba(13, 148, 136, 0.12);
+}
+
+.math-coach-clarify-q {
+  margin: 0 0 0.35em;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: rgba(51, 65, 85, 0.55);
+}
+
+.math-coach-clarify-a {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: rgba(30, 41, 59, 0.88);
+}
+
+.math-coach-clarify-mic {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 0;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  background: linear-gradient(-75deg, rgba(255,255,255,0.35), rgba(255,255,255,0.62), rgba(255,255,255,0.32));
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 0.35rem 0.7rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(51, 65, 85, 0.8);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.math-coach-clarify-mic.is-recording {
+  border-color: rgba(220, 38, 38, 0.35);
+  color: #b91c1c;
+  background: rgba(254, 242, 242, 0.9);
+}
+
+.math-coach-clarify-mic:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.math-coach-clarify-interim {
+  color: rgba(51, 65, 85, 0.55);
+  font-style: italic;
+}
+
+.math-coach-clarify-live {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: rgba(30, 41, 59, 0.82);
+}
+
+.math-coach-clarify--live {
+  border-style: dashed;
+  animation: math-clarify-pulse 2s ease-in-out infinite;
+}
+
+@keyframes math-clarify-pulse {
+  0%, 100% { background: rgba(13, 148, 136, 0.06); }
+  50% { background: rgba(13, 148, 136, 0.11); }
+}
+
+.math-tutor-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.math-tutor-actions-primary {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 12px;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(30, 41, 59, 0.88);
+  background: linear-gradient(-75deg, rgba(255,255,255,0.32), rgba(255,255,255,0.6), rgba(255,255,255,0.3));
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.75), 0 2px 10px rgba(0,0,0,0.08);
+  transition: transform var(--anim--hover-time) var(--anim--hover-ease), filter 0.15s ease;
+}
+
+.math-tutor-actions-primary:hover {
+  filter: brightness(1.03);
+  transform: scale(0.985);
+}
+
+.math-tutor-actions-secondary {
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0.15rem 0;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: rgba(37, 99, 235, 0.78);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.math-tutor-actions-secondary:hover {
+  color: rgba(29, 78, 216, 0.95);
+}
+
+.math-tutor-actions-primary:disabled,
+.math-tutor-actions-secondary:disabled {
+  opacity: 0.4;
+  cursor: default;
+  filter: none;
+  text-decoration: none;
+}
+
+.math-tutor-checkin {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.math-tutor-checkin-label {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: rgba(51, 65, 85, 0.65);
+}
+
+.math-toolbar-shell {
+  pointer-events: none;
+}
+
+.math-toolbar-shell > * {
+  pointer-events: auto;
+}
+
+/* Dock edges use layout centering (not transform) so FLIP snap can own transform. */
+.math-toolbar-shell.dock-top {
+  top: 8px;
+  left: 0;
+  right: 0;
+  width: max-content;
+  margin-inline: auto;
+}
+
+.math-toolbar-shell.is-competition.dock-top {
+  top: 12px;
+}
+
+.math-toolbar-shell.dock-bottom {
+  /* Sit above the bottom mic / voice bar (16px + control height + gap). */
+  bottom: 76px;
+  left: 0;
+  right: 0;
+  width: max-content;
+  margin-inline: auto;
+}
+
+.math-toolbar-shell.is-competition.dock-bottom {
+  /* Competition mic is a 34px circle at bottom: 16. */
+  bottom: 64px;
+}
+
+.math-toolbar-shell.dock-left {
+  left: 12px;
+  top: 0;
+  bottom: 0;
+  height: max-content;
+  margin-block: auto;
+}
+
+.math-toolbar-shell.dock-right {
+  right: 12px;
+  top: 0;
+  bottom: 0;
+  height: max-content;
+  margin-block: auto;
+}
+
+.math-toolbar-shell.is-dragging {
+  pointer-events: none;
+  z-index: 60;
+  left: 0 !important;
+  top: 0 !important;
+  right: auto !important;
+  bottom: auto !important;
+}
+
+.math-toolbar-shell.is-dragging > * {
+  pointer-events: none;
+}
+
+.math-toolbar-shell.is-snapping {
+  pointer-events: none;
+  z-index: 60;
+}
+
+.math-toolbar-shell.is-snapping > * {
+  pointer-events: none;
+}
+
+.math-toolbar-shell.is-snapping .math-toolbar-body {
+  /* Soften content while the FLIP scale morphs orientation */
+  transition: filter 0.2s ease;
+}
+
+.math-toolbar-grip {
+  width: 36px;
+  height: 10px;
+  margin-bottom: 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  cursor: grab;
+  flex-shrink: 0;
+  touch-action: none;
+}
+
+.math-toolbar-grip:hover {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.math-toolbar-shell.is-dragging .math-toolbar-grip {
+  cursor: grabbing;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.math-toolbar-shell.is-vertical .math-toolbar-grip {
+  margin-bottom: 6px;
+}
+
+.math-toolbar-body {
+  pointer-events: auto;
+}
+
+.math-toolbar-shell:not(.is-vertical) .math-toolbar-body {
+  flex-wrap: nowrap;
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+}
+
+.math-toolbar-shell:not(.is-vertical) .math-hint-toolbar,
+.math-toolbar-shell:not(.is-vertical) .math-toolbar-body > div {
+  flex-shrink: 0;
+}
+
+.math-toolbar-shell.dock-top,
+.math-toolbar-shell.dock-bottom {
+  max-width: none;
+}
+
+.math-toolbar-dock-ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 44;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.07);
+  border: 1px dashed rgba(0, 0, 0, 0.14);
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform, opacity, width, height;
+  transition:
+    opacity 0.12s ease,
+    width 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.math-hint-toolbar {
+  border-left: 1px solid rgba(0, 0, 0, 0.08);
+  padding-left: 8px;
+}
+
+.math-toolbar-shell.is-vertical .math-hint-toolbar {
+  border-left: none;
+  padding-left: 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  padding-top: 8px;
+}
+
+.math-hint-size-btn {
+  /* Sizing only — glass + active highlight come from .btn-ghost / ACTIVE_GLASS */
+  border-radius: 8px;
+}
+
+.math-tutor-feedback {
+  display: flex;
+  gap: 6px;
+  margin-top: 0.45em;
+}
+
+.math-tutor-feedback button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 50%;
+  background: linear-gradient(-75deg, rgba(255,255,255,0.28), rgba(255,255,255,0.55), rgba(255,255,255,0.25));
+  backdrop-filter: blur(8px) saturate(130%);
+  -webkit-backdrop-filter: blur(8px) saturate(130%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 8px rgba(0, 0, 0, 0.1);
+  color: rgba(30, 41, 59, 0.65);
+  cursor: pointer;
+  transition: transform var(--anim--hover-time) var(--anim--hover-ease), color 0.15s ease;
+}
+
+.math-tutor-feedback button:hover {
+  background: linear-gradient(-75deg, rgba(255,255,255,0.4), rgba(255,255,255,0.75), rgba(255,255,255,0.38));
+  color: rgba(30, 41, 59, 0.9);
+  transform: scale(0.97);
+}
+
+.math-tutor-more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 0.35em;
+}
+
+.math-tutor-more button {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: rgba(37, 99, 235, 0.78);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.math-tutor-more button:hover {
+  color: rgba(29, 78, 216, 0.95);
+}
+
+.math-tutor-dismiss {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  color: rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.math-tutor-presence:hover .math-tutor-dismiss {
+  opacity: 1;
+}
+
+.math-tutor-stuck-prompt {
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 14px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+/* ══════════════════════ AMC Math Coach (/amc) ══════════════════════
+   Page chrome only — the whiteboard itself reuses the math classes above
+   untouched. Brand: AMC Academy maroon (#340002) + gold (#b97d10). */
+
+.amc-shell {
+  height: 100%;
+  min-height: 0;
+}
+
+/* Floating chrome — logo, boards, account — sits on the whiteboard. */
+.amc-float {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 70;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.amc-float-left,
+.amc-float-right {
+  pointer-events: auto;
+}
+
+.amc-float-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 8px;
+  max-width: min(100% - 56px, 360px);
+}
+
+.amc-float-logo {
+  height: 30px;
+  width: auto;
+  flex-shrink: 0;
+  display: block;
+  border-radius: 6px;
+}
+
+.amc-float-left .amc-board-menu {
+  min-width: 0;
+  border-left: 1px solid rgba(0, 0, 0, 0.08);
+  padding-left: 6px;
+}
+
+.amc-float-left .amc-board-trigger {
+  max-width: 200px;
+  border: none;
+  background: transparent;
+  padding: 4px 8px;
+}
+
+.amc-float-left .amc-board-trigger:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.amc-float-left .amc-board-pop {
+  left: 0;
+  transform: none;
+}
+
+.amc-float-right {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.amc-sync-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: rgba(40, 40, 40, 0.72);
+  animation: amc-sync-in 160ms ease-out;
+  user-select: none;
+}
+
+.amc-sync-status.is-saved {
+  color: #1f6b3a;
+}
+
+.amc-sync-status.is-error {
+  color: #8a1f1f;
+}
+
+.amc-sync-spin {
+  animation: amc-sync-spin 0.8s linear infinite;
+}
+
+@keyframes amc-sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes amc-sync-in {
+  from {
+    opacity: 0;
+    transform: translateX(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.amc-user-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid rgba(52, 0, 2, 0.25);
+  background: #340002;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  overflow: hidden;
+}
+
+.amc-user-btn img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.amc-user-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 180px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.16);
+  padding: 6px;
+  z-index: 60;
+}
+
+.amc-user-name {
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(30, 30, 30, 0.85);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  margin-bottom: 4px;
+}
+
+.amc-user-pop button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px;
+  color: rgba(40, 40, 40, 0.9);
+  cursor: pointer;
+  text-align: left;
+}
+
+.amc-user-pop button:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.amc-main {
+  height: 100%;
+  min-height: 0;
+  position: relative;
+}
+
+.amc-board-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.amc-board-wrap {
+  position: absolute;
+  inset: 0;
+}
+
+/* ── Boards dropdown ── */
+
+.amc-board-menu {
+  position: relative;
+}
+
+.amc-board-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  padding: 6px 12px;
+  border: 1px solid rgba(52, 0, 2, 0.18);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.8);
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(30, 30, 30, 0.85);
+  cursor: pointer;
+}
+
+.amc-board-trigger:hover {
+  background: #fff;
+}
+
+.amc-board-trigger-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.amc-rot {
+  transform: rotate(180deg);
+}
+
+.amc-board-pop {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: calc(100% + 8px);
+  width: 280px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+  z-index: 60;
+}
+
+.amc-board-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.amc-board-pop-head button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 7px;
+  background: rgba(185, 125, 16, 0.12);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #8a5c0a;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.amc-board-pop-head button:hover {
+  background: rgba(185, 125, 16, 0.2);
+}
+
+.amc-board-pop-list {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.amc-board-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 8px;
+}
+
+.amc-board-row.is-active {
+  background: rgba(52, 0, 2, 0.06);
+}
+
+.amc-board-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.amc-board-row-name {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 8px;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 13px;
+  color: rgba(30, 30, 30, 0.85);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.amc-board-row.is-active .amc-board-row-name {
+  font-weight: 700;
+}
+
+.amc-board-row-icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.amc-board-row:hover .amc-board-row-icon {
+  opacity: 1;
+}
+
+.amc-board-row-icon:hover {
+  background: rgba(0, 0, 0, 0.07);
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.amc-board-row-delete:hover {
+  background: rgba(220, 38, 38, 0.1);
+  color: #dc2626;
+}
+
+.amc-board-row input {
+  flex: 1;
+  min-width: 0;
+  margin: 3px 0;
+  padding: 5px 8px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 7px;
+  font-size: 13px;
+  outline: none;
+}
+
+.amc-board-row input:focus {
+  border-color: #b97d10;
+}
+
+/* ── Empty board: paste-first onboarding ── */
+
+.amc-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Keep clear of the floating toolbar (top) and voice bar (bottom). */
+  padding-top: 150px;
+  padding-bottom: 90px;
+  pointer-events: none;
+  z-index: 30;
+}
+
+.amc-empty-inner {
+  max-width: 460px;
+  text-align: center;
+  padding: 0 24px;
+}
+
+.amc-empty-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: rgba(52, 0, 2, 0.07);
+  border: 1px solid rgba(52, 0, 2, 0.14);
+  color: #340002;
+  margin-bottom: 14px;
+}
+
+.amc-empty-title {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: rgba(20, 20, 20, 0.78);
+}
+
+.amc-empty-sub {
+  margin-top: 8px;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.55);
+  line-height: 1.55;
+}
+
+.amc-empty-sub kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: #fff;
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 700;
+  color: rgba(0, 0, 0, 0.7);
+}
+
+.amc-empty-sub2 {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: rgba(0, 0, 0, 0.42);
+  line-height: 1.6;
+}
+
+/* ── Login / register ── */
+
+.amc-login {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.amc-login-card {
+  width: min(100%, 380px);
+  /* Pure white so the AMC Academy wordmark's white background blends in. */
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 20px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.12);
+  padding: 32px 30px 26px;
+  display: flex;
+  flex-direction: column;
+}
+
+.amc-login-logo {
+  height: 56px;
+  width: auto;
+  align-self: center;
+  display: block;
+  border-radius: 8px;
+}
+
+.amc-login-title {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: #340002;
+}
+
+.amc-login-sub {
+  margin-top: 6px;
+  margin-bottom: 20px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.amc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 13px;
+}
+
+.amc-field span {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.amc-field input {
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  border-radius: 10px;
+  background: #fff;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.amc-field input:focus {
+  border-color: #b97d10;
+  box-shadow: 0 0 0 3px rgba(185, 125, 16, 0.15);
+}
+
+.amc-login-error {
+  margin: -4px 0 10px;
+  font-size: 12.5px;
+  color: #b91c1c;
+  line-height: 1.45;
+}
+
+.amc-login-submit {
+  margin-top: 2px;
+  padding: 11px 14px;
+  border: none;
+  border-radius: 11px;
+  background: #340002;
+  color: #fff;
+  font-size: 14.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.08s ease;
+}
+
+.amc-login-submit:hover:not(:disabled) {
+  background: #4d0206;
+}
+
+.amc-login-submit:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.amc-login-submit:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.amc-login-switch {
+  margin-top: 14px;
+  border: none;
+  background: none;
+  font-size: 12.5px;
+  color: rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+.amc-login-switch:hover {
+  color: rgba(0, 0, 0, 0.75);
+}
+
+.amc-login-switch u {
+  color: #8a5c0a;
+  text-underline-offset: 2px;
 }
