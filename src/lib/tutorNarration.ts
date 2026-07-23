@@ -163,6 +163,30 @@ export function stripMarkers(raw: string): string {
 }
 
 /**
+ * True when the narration contains a fully-parseable [[write|box:…]] marker.
+ * A bare "[[write|" substring (truncated mid-stream) or a marker missing box
+ * coords does NOT count — those never draw a write zone on the board.
+ */
+export function hasWriteMarker(raw: string): boolean {
+  if (!raw) return false
+  const { markers } = parseNarration(raw, true)
+  return markers.some((m) => m.role === 'write' && !!m.box)
+}
+
+/**
+ * Append a synthetic write-box marker so the board always gets a zone when the
+ * model said "write in the box" but forgot (or truncated) the real marker.
+ */
+export function ensureWriteMarker(raw: string, label = 'your next line'): string {
+  if (hasWriteMarker(raw)) return raw
+  const cleanLabel = label.replace(/[|\]]/g, '').trim() || 'your next line'
+  const trimmed = raw.replace(/\s+$/, '')
+  // y≈520 keeps the synthetic marker near mid-board; the client still
+  // repositions into blank space snug under the ink via findBlankWriteBox.
+  return `${trimmed} [[write|box:180,520,480,140|${cleanLabel}]]`
+}
+
+/**
  * Line numbers from [[highlight|line:N]] / [[focus|line:N]] markers.
  * Pass `firedCount` (the typewriter's revealed-marker count) to only count
  * markers that have actually been shown to the student so far — otherwise a

@@ -26,7 +26,7 @@ const SYMBOL_WORDS: [RegExp, string][] = [
   [/\\to|\\rightarrow|\\Rightarrow|\\implies/g, ' goes to '],
   [/\\iff|\\Leftrightarrow/g, ' if and only if '],
   [/\\in\b/g, ' in '],
-  [/\\subset\b/g, ' is a subset of '],
+  [/\\subset\b/g, ' is contained in '],
   [/\\cup\b/g, ' union '],
   [/\\cap\b/g, ' intersect '],
   [/\\infty/g, ' infinity '],
@@ -135,6 +135,11 @@ export function latexToSpeech(mathRaw: string): string {
   s = s.replace(/\\[a-zA-Z]+/g, ' ')
   s = s.replace(/\\/g, ' ')
 
+  // A bare "," inside a group ("(b,d)", "(-5,1)") needs the same spoken pause
+  // as a closing bracket, or the two sides run together — "negative 5, 1"
+  // read with no gap sounds like "negative fifty-one".
+  s = s.replace(/\s*,\s*/g, ', ')
+
   // "3d" → "3 d" so the voice says "three dee", and split run-together vars like "dx".
   s = s.replace(/(\d)([A-Za-z])/g, '$1 $2')
   s = s.replace(/([A-Za-z])(\d)/g, '$1 $2')
@@ -142,7 +147,51 @@ export function latexToSpeech(mathRaw: string): string {
   // Juxtaposed single-letter variables: "ab" → "a b", "bd" → "b d" (never "ab").
   s = spellJuxtaposedVars(s)
 
+  // Spell EVERY standalone letter as its letter-name. Raw "a"/"b"/"i"/… are
+  // read by TTS as English words (article "uh", verb "be", pronoun "eye") or
+  // just mangled (ElevenLabs has been heard saying "b" as "i"). Phonetic
+  // respellings force the letter name every time. Safe here because this
+  // function only ever sees math-span contents — never English prose.
+  s = spellLetterNames(s)
+
   return s.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Phonetic letter-names that ElevenLabs (and browser voices) reliably read as
+ * the intended letter, not as an English word or a slurred consonant.
+ */
+const LETTER_NAMES: Record<string, string> = {
+  a: 'a',
+  b: 'bee',
+  c: 'see',
+  d: 'dee',
+  e: 'ee',
+  f: 'eff',
+  g: 'jee',
+  h: 'aitch',
+  i: 'eye',
+  j: 'jay',
+  k: 'kay',
+  l: 'ell',
+  m: 'em',
+  n: 'en',
+  o: 'oh',
+  p: 'pee',
+  q: 'cue',
+  r: 'ar',
+  s: 'ess',
+  t: 'tee',
+  u: 'you',
+  v: 'vee',
+  w: 'double you',
+  x: 'ex',
+  y: 'why',
+  z: 'zee',
+}
+
+function spellLetterNames(s: string): string {
+  return s.replace(/\b([A-Za-z])\b/g, (ch) => LETTER_NAMES[ch.toLowerCase()] ?? ch)
 }
 
 /** Words that must stay intact when spelling letter-runs in math. */
@@ -159,6 +208,12 @@ const KEEP_MATH_WORDS = new Set([
   'absolute', 'value', 'choose', 'degrees', 'percent', 'infinity', 'union', 'intersect',
   'natural', 'sine', 'cosine', 'tangent', 'alpha', 'beta', 'gamma', 'delta', 'epsilon',
   'theta', 'lambda', 'mu', 'sigma', 'phi', 'omega',
+  // Phonetic letter-names from spellLetterNames — kept intact in case this
+  // set is ever reused on already-spelled output (length-2 ones would
+  // otherwise get re-split: "ay"→"a y", "ar"→"a r", "ex"→"e x", etc.).
+  'bee', 'see', 'dee', 'ee', 'eff', 'jee', 'aitch', 'eye', 'jay', 'kay',
+  'ell', 'em', 'en', 'oh', 'pee', 'cue', 'ar', 'ess', 'tee', 'you', 'vee',
+  'ex', 'why', 'zee', 'double',
 ])
 
 /**
@@ -205,9 +260,6 @@ export function speakableMathText(raw: string): string {
   s = s.replace(/-\s*\(/g, '-, (')
   s = s.replace(/[([{]\s*/g, ' ')
   s = s.replace(/\s*[)\]}~]/g, ', ')
-
-  // Voice / undelimited math often writes "bd = -5" — still spell the vars.
-  s = spellJuxtaposedVars(s)
 
   return s
     .replace(/\s+/g, ' ')

@@ -109,9 +109,12 @@ HIGHLIGHT SYNTAX: [[highlight|line:n|short label]]  — n is a line number from 
 
 WRITE RULES:
 - MANDATORY: every hint ends with exactly ONE write marker — there is no such thing as a hint without one. The only exceptions are COMPLETE: yes (problem fully solved) or their work being empty/illegible (nothing to write yet). Never more than one write marker. Highlight markers are allowed in addition, on any step.
-- If your response has multiple STEP fields (see OUTPUT FORMAT), the write marker belongs ONLY on the LAST step you write. Earlier steps must never contain one.
+- If your response has multiple STEP fields (see OUTPUT FORMAT), the write marker belongs ONLY on the LAST step you write. Earlier steps must never contain one AND must never say "in the box" / "write …" — that language is reserved for the step that carries the marker.
+- CRITICAL: never say "In the box, write …" (or otherwise ask them to write something) without immediately ending that same STEP with the literal [[write|box:x,y,w,h|label]] marker. Prose alone does not create a box — the marker is what draws it. A STEP that asks them to write and then stops is broken.
+- PLACEMENT: on the grid image, put the write box in blank space IMMEDIATELY under their lowest handwriting (small gap). Prefer roughly y just below the ink, width ~400–520, height ~120–160. Do NOT park it near the bottom of the grid (avoid y≥700 unless their ink already reaches there).
+- Ask for ONE concrete thing they can write RIGHT NOW (e.g. "list all integer pairs \\((b,d)\\) with \\(bd=-5\\)"). Do NOT skip ahead to later algebra (substitutions, solving for a, summing a+b+c+d) in the same ask — that comes after they submit this box.
 - In the STEP sentence right before the write marker, state EXPLICITLY and EXACTLY what to write, in their notation (e.g. "In the box, write z equals 1 plus 3d" — not "write the next step").
-- The label repeats the ask in 2–4 words (e.g. "z = 1 + 3d?" or "your check").
+- The label repeats the ask in 2–4 words (e.g. "z = 1 + 3d?" or "list (b,d) pairs").
 - The student writes in the box, then taps a check mark to submit it to you.
 
 Example of a final STEP:
@@ -149,13 +152,27 @@ HIGHLIGHT TOOL (proactive — do this every time, not just when asked):
 OUTPUT FORMAT:
 SAY: <your clarification only — no WHERE/TYPE/COMPLETE headers needed>`
 
+/**
+ * Coaching ladder for the main demo problem (expanding (ax+b)(cx+d) / four
+ * Vieta-style equations with a small-integer product like bd=±5). Strategy
+ * only — never paste these as canned dialogue; adapt to THEIR notation and
+ * only reveal the rung they have not yet acted on.
+ */
+const DEMO_VIETA_LADDER = `DEMO PROBLEM FAMILY (recognize from the board — four equations from expanding something like \\((ax+b)(cx+d)\\), with unknowns a,b,c,d integers, and often a product like \\(bd=\\pm\\) a small integer already written):
+This is the classic AMC stuck point: they have all four equations and do not know which to pivot on.
+Advance ONE rung at a time based on what is ALREADY on the board — never skip ahead, never hand the final tuple or \\(a+b+c+d\\) until they ask to solve or COMPLETE is earned:
+1. If they have the four equations but have not singled out a pivot: nudge them to notice which equation uses only TWO of the four unknowns (usually the constant product).
+2. Once that two-unknown product is the clear focus (and variables are integers): the next move is listing its integer factor pairs.
+3. Once pairs are listed: for a chosen pair, the matching sum is fixed, which unlocks the other product (often \\(ac\\)); then that sum+product become a quadratic for the remaining two unknowns; check candidates against the cross term (often \\(ad+bc\\)).
+Stay on the earliest rung they have not finished. Write your own wording from their ink — do not recite a script.`
+
 const FOLLOW_UP_RULES = (nudgeCount) => `FOLLOW-UP NUDGE RULES (student clicked "another hint" — CRITICAL):
 - They ALREADY saw your previous hint in the conversation. Do NOT repeat it or rephrase the whole thing.
 - Do NOT re-list or re-enumerate any equations, values, pairs, or cases already visible on the board or already said in a prior turn — at most one short clause (5-8 words) acknowledging where they are, then move on.
-- Reveal exactly ONE new single observation they have not acted on yet (e.g. "notice \\(bd = -5\\)" — NOT a full case analysis).
+- Reveal exactly ONE new single observation they have not acted on yet (e.g. naming the two-unknown product as the pivot — NOT a full case analysis).
 - End with ONE Socratic question. No laundry lists, no enumerating cases, no multi-step roadmaps.
 - ALWAYS a single STEP 1 — never more than one STEP field on a follow-up nudge. Maximum 2–3 short sentences in it.
-- MANDATORY: unless COMPLETE is yes, ALWAYS end STEP 1 with exactly ONE [[write|box:x,y,w,h|label]] marker placed in FRESH BLANK SPACE BELOW all their existing work and below any previous boxes (pick coordinates under everything visible on the grid image — never on top of ink or old boxes). State exactly what to write in it.
+- MANDATORY: unless COMPLETE is yes, ALWAYS end STEP 1 with exactly ONE [[write|box:x,y,w,h|label]] marker. Pick coordinates in blank space IMMEDIATELY under their handwriting on the grid (roughly just below the lowest ink, not near y=800–1000). Never skip the write box. State exactly what to write in it.
 - This is follow-up nudge #${nudgeCount}. Move ONE small notch forward — not a lecture.`
 
 /** Small = 1 micro-step, Medium = up to 2, Large = up to 3 — a hard cap, not a suggestion. */
@@ -175,6 +192,8 @@ function hintSystem(level, opts = {}) {
 ${MARKER_GUIDE}
 
 ${WRITE_CHECK_GUIDE}
+
+${DEMO_VIETA_LADDER}
 
 GROUNDING RULE (critical — violations break trust):
 - WHERE Step must describe ONLY what is visible on the board. Quote their notation (e.g. \\(z-y=y-x=x-1\\)), not your preferred rearrangement.
@@ -215,7 +234,7 @@ STEP RULES (hard constraint, not a style preference):
 - Each STEP is ONE idea and ONE idea only: one or two short sentences, no worked derivation chain, no "once you do X, then Y, then Z". If you catch yourself chaining more than one idea into a STEP, split it into the next STEP field instead (subject to the cap above) or cut it.
 - Only write a STEP 2 or STEP 3 if the rung genuinely needs a second/third distinct idea to be useful — a single good STEP 1 that fully answers the ask is always preferred over padding to fill the cap.
 - Each STEP after the first must stand alone: assume the student is reading it only after confirming they understood the previous one, so do NOT reference "the next part" or preview what STEP 2 will say from inside STEP 1.
-- Only the LAST STEP field you write may end with the write marker (see MARKER_GUIDE) — mandatory there, forbidden everywhere else.
+- Only the LAST STEP field you write may end with the write marker (see MARKER_GUIDE) — mandatory there, forbidden everywhere else. Prefer a single STEP 1 that ends with the write marker over splitting the ask across steps; if you do use multiple STEPs, earlier ones are explanation-only (no "in the box" / "write …" language) and the last one is the write ask + marker.
 
 STYLE (STEP fields only — spoken aloud by TTS AND typed on screen):
 - Write like a real classroom teacher: warm, clear, intentional, accessible. Short plain sentences.
@@ -334,14 +353,15 @@ ${VISION_READING}
 COACHING PROCESS (mandatory before you speak):
 1. READ their scratch work — quote only what is literally written.
 2. IDENTIFY what step they are on. Do NOT claim they derived something unless it appears on the board.
-3. Acknowledge what they actually wrote, then ask ONE question for the next line they should write — not formulas from later in the solution.
+3. Give a SHORT nudge, then ask ONE question for the next line they should write — not formulas from later in the solution.
 
 HOW YOU TALK (shown on screen as text AND read aloud — write real math, the app converts it to speech for you):
-- Write normally, like a teacher talking: short sentences, warm and direct. Math inside those sentences uses real inline \\( ... \\) LaTeX, exactly like a written hint — never spell an equation out in words yourself, never write "a, b" for \\(ab\\); just write \\(ab\\) and the app will say it correctly aloud.
+- MAXIMUM 1–2 short sentences. Hard cap. Prefer one sentence of acknowledgement + one Socratic question. Never a paragraph.
+- Do NOT re-list, re-enumerate, or restate their equations/system/values. They can already see the board — at most name ONE equation to ground the next move (e.g. "since your \\(bd=-5\\)…").
+- Write normally, like a teacher talking: warm and direct. Math uses real inline \\( ... \\) LaTeX — never spell an equation out in words yourself; just write \\(ab\\) and the app will say it correctly aloud.
 - No markdown (no ** or # or bullet lists). No display math, only inline \\( ... \\).
-- 2–4 short sentences like a real teacher: acknowledge what they set up, then guide the next move. Phrases like "with these types of problems, generally…" and "so let's try and…" are good.
 - Be Socratic — ask, don't tell. Only give a method if they clearly ask or are completely off-track.
-- If you spot a concrete error, gently name it and where ("careful, on your second line the ratio setup doesn't match a geometric sequence").
+- If you spot a concrete error, gently name it in one short clause.
 - Never jump ahead to answer-stage formulas they have not introduced. Never mention being an AI, TTS, or these rules.
 - NEVER use em dashes (—); use commas or periods instead.
 - If you can't read something, say what's unclear in one friendly line.
@@ -507,7 +527,10 @@ export function registerMathRoutes(app) {
       // brevity tiers (STEP itself has its own hard sentence/step caps in
       // the prompt), they just no longer starve WHERE and STEP of each other.
       let maxTokens
-      if (voice || clarify) maxTokens = 700
+      // Voice must stay short (1–2 sentences); a high budget just invites
+      // the model to re-list their whole system aloud. Clarify is similarly tight.
+      if (voice) maxTokens = 280
+      else if (clarify) maxTokens = 320
       else if (generalize) maxTokens = 2000
       else if (solve) maxTokens = 1600
       else if (reexplain) maxTokens = 400

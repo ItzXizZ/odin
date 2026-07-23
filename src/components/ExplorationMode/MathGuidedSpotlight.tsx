@@ -57,9 +57,11 @@ function sizeWriteBox(
 ): BoardBounds {
   const lineH = handwritingLineHeight(strokes)
   const boardW = boardBounds.maxX - boardBounds.minX
-  const minW = Math.max(lineH * 22, boardW * 0.85)
-  const minH = Math.max(lineH * 8, 280)
-  return findBlankWriteBox(strokes, boardBounds, avoidBoxes, minW, minH, occupied)
+  // ~one equation line wide, ~2–3 handwriting lines tall — snug under their
+  // work, not a giant slab parked at the bottom of the board.
+  const minW = Math.min(boardW * 0.68, Math.max(lineH * 11, boardW * 0.5))
+  const minH = Math.min(lineH * 2.6, 120)
+  return findBlankWriteBox(strokes, boardBounds, avoidBoxes, minW, Math.max(minH, 80), occupied)
 }
 
 const INK_HIGHLIGHT_ROLES = new Set(['confirmed', 'focus', 'suggestion', 'error', 'highlight'])

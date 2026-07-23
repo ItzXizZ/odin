@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { EdgeLabelRenderer, useReactFlow, useViewport } from 'reactflow'
 import {
-  X,
   Check,
   Loader2,
   Mic,
@@ -34,10 +33,17 @@ import {
 import {
   boundsFromPoints,
   unionBounds,
+  mainInkBounds,
   type BoardBounds,
   type ScreenRect,
 } from '../../lib/mathBoardManifest'
-import { parseNarration, stripMarkers, extractHighlightLineNumbers } from '../../lib/tutorNarration'
+import {
+  parseNarration,
+  stripMarkers,
+  extractHighlightLineNumbers,
+  hasWriteMarker,
+  ensureWriteMarker,
+} from '../../lib/tutorNarration'
 import { speakableMathText } from '../../lib/mathSpeech'
 import { MathTutorHighlight, MathTutorScreenLayer } from './MathTutorOverlay'
 import MathGuidedSpotlight, {
@@ -81,14 +87,24 @@ function imageOccupied(images: ImgEl[]): BoardBounds[] {
   return images.map((im) => ({ minX: im.x, minY: im.y, maxX: im.x + im.w, maxY: im.y + im.h }))
 }
 
-/** Pasted problems + prior write boxes on a hint card (so new boxes land in fresh space). */
-function cardOccupied(images: ImgEl[], card?: HintCard): BoardBounds[] {
-  const occupied = imageOccupied(images)
-  if (!card) return occupied
+/**
+ * Past write boxes on this card only — NOT pasted problem images.
+ * Images still block overlap inside findBlankWriteBox via a separate pass;
+ * including them here used to shove new boxes below a tall screenshot.
+ */
+function cardWriteOccupied(card?: HintCard): BoardBounds[] {
+  if (!card) return []
   const extra: BoardBounds[] = [...(card.usedWriteBoxes ?? [])]
   for (const b of Object.values(card.writeBoxes ?? {})) extra.push(b)
   if (card.heldZone) extra.push(card.heldZone.box)
-  return extra.length ? [...occupied, ...extra] : occupied
+  return extra
+}
+
+/** Pasted problems + prior write boxes (legacy callers that need both). */
+function cardOccupied(images: ImgEl[], card?: HintCard): BoardBounds[] {
+  const occupied = imageOccupied(images)
+  const writes = cardWriteOccupied(card)
+  return writes.length ? [...occupied, ...writes] : occupied
 }
 
 interface HintCard {
@@ -1429,17 +1445,12 @@ export default function MathLayer({
   }, [rf])
 
   /**
-   * Bounds of everything on the board (ink + pasted problem images), with a
-   * generous bottom margin of blank space so the model has room to place
-   * "write here" boxes below the student's last line. This is the 0–1000 grid
-   * space the model targets, and the exact area the grid image renders.
+   * Bounds of the main work (pasted problem + primary ink cluster), with a
+   * small bottom margin for the write box. Stray strokes far below an earlier
+   * misplaced box are ignored so the grid / viewport stay tight.
    */
   const workBounds = useCallback((): BoardBounds => {
-    let b: BoardBounds | null = null
-    for (const st of strokesRef.current) {
-      const sb = boundsFromPoints(st.points)
-      if (sb) b = b ? unionBounds(b, sb) : sb
-    }
+    let b: BoardBounds | null = mainInkBounds(strokesRef.current)
     for (const im of imagesRef.current) {
       const ib = { minX: im.x, minY: im.y, maxX: im.x + im.w, maxY: im.y + im.h }
       b = b ? unionBounds(b, ib) : ib
@@ -1447,13 +1458,12 @@ export default function MathLayer({
     if (!b) return paneFlowBounds() ?? { minX: 0, minY: 0, maxX: 1000, maxY: 1000 }
     const w = b.maxX - b.minX
     const h = b.maxY - b.minY
-    const pad = Math.max(50, Math.min(w, h) * 0.08)
+    const pad = Math.max(40, Math.min(w, h) * 0.06)
     return {
       minX: b.minX - pad,
       minY: b.minY - pad,
       maxX: b.maxX + pad,
-      // Extra blank space below the work for large write boxes.
-      maxY: b.maxY + Math.max(400, h * 0.6),
+      maxY: b.maxY + Math.max(140, Math.min(200, h * 0.22)),
     }
   }, [paneFlowBounds])
 
@@ -1767,35 +1777,91 @@ export default function MathLayer({
           }
           // Every hint that isn't a full-solve confirmation MUST end with a
           // write box — that's the one thing the student always does next.
-          // Previously only enforced on follow-up nudges; now enforced on
-          // every hint request, so it never silently comes back without one.
+          // Check for a *parseable* [[write|box:…]] (not just the substring),
+          // since truncated/malformed markers never draw a zone on the board.
           const missingWriteBox =
             opts.mode === 'hint' &&
             !parsed?.complete &&
-            !/\[\[write\|/i.test(cappedJoined) &&
+            !hasWriteMarker(cappedJoined) &&
             !opts.writeBoxRetry
           if (missingWriteBox) {
             runHint(cardId, {
               ...opts,
               writeBoxRetry: true,
-              prompt: `${opts.prompt} REMINDER: you MUST end your last STEP with exactly ONE [[write|box:x,y,w,h|label]] in fresh blank space below my work — never finish a hint without one unless the problem is fully solved. State explicitly what to write.`,
+              prompt: `${opts.prompt} REMINDER: you MUST end your last STEP with exactly ONE literal [[write|box:x,y,w,h|label]] marker — saying "in the box" in prose is not enough and creates no box. State exactly what to write, then the marker. One concrete ask only (e.g. list the factor pairs) — do not skip ahead.`,
             })
             return
           }
+
+          // Guarantee: the text the student sees RIGHT NOW (step 1) always
+          // carries a write marker. Models often put the ask in STEP 1 prose
+          // ("list the pairs… In the box, write…") but omit the marker, or
+          // bury it on a later gated step the student hasn't revealed yet.
+          let finalSteps = cappedSteps
+          let finalText = revealedText
+          if (opts.mode === 'hint' && !parsed?.complete) {
+            const labelGuess =
+              revealedText.match(
+                /(?:in the box[,:]?\s*)?write\s+([\s\S]{0,80}?)(?:\s*[.!]|\s*\[\[|$)/i
+              )?.[1]
+                ?.replace(/\$+/g, '')
+                .trim()
+                .slice(0, 40) || 'your next line'
+            if (!hasWriteMarker(finalText)) {
+              finalText = ensureWriteMarker(finalText, labelGuess)
+              // Keep a single write zone: strip any write markers that were
+              // sitting on later gated steps so advancing doesn't spawn a second box.
+              finalSteps = [
+                finalText,
+                ...finalSteps
+                  .slice(1)
+                  .map((s) => s.replace(/\[\[write\|[^\]]*\]\]/gi, '').replace(/\s+/g, ' ').trim())
+                  .filter(Boolean),
+              ]
+            }
+          }
+
+          // Place the write box immediately when the hint lands — don't wait
+          // for the typewriter to crawl to the trailing [[write|…]] marker.
+          let earlyWriteBoxes: Record<number, BoardBounds> = {}
+          let earlyFired = 0
+          const textForBoard = opts.mode === 'hint' ? finalText : displayed
+          if (opts.mode === 'hint' && !parsed?.complete && boardBounds && hasWriteMarker(textForBoard)) {
+            const cardNow = cardsRef.current.find((c) => c.id === cardId)
+            const occupied = cardOccupied(imagesRef.current, cardNow)
+            const { markers } = parseNarration(textForBoard, true)
+            earlyFired = markers.length
+            const { writes } = resolveFiredMarkers(
+              textForBoard,
+              earlyFired,
+              strokesRef.current,
+              boardBounds,
+              12,
+              occupied,
+              {}
+            )
+            for (const w of writes) earlyWriteBoxes[w.index] = w.box
+            const latest = writes[writes.length - 1]
+            if (latest) panToWriteBox(latest.box)
+          }
+
           setCards((cs) =>
             cs.map((c) =>
               c.id === cardId
                 ? {
                     ...c,
                     status: 'done',
-                    text: opts.mode === 'hint' ? revealedText : displayed,
-                    steps: opts.mode === 'hint' ? cappedSteps : c.steps,
+                    text: textForBoard,
+                    steps: opts.mode === 'hint' ? finalSteps : c.steps,
                     revealedSteps: 1,
                     strategy: parsed?.strategy,
                     step: parsed?.step,
                     hintType: finalType ?? c.hintType,
                     complete: parsed?.complete ?? false,
                     heldZone: c.heldZone ? { ...c.heldZone, state: 'done' } : undefined,
+                    ...(earlyFired > 0
+                      ? { firedMarkers: Math.max(c.firedMarkers, earlyFired), writeBoxes: earlyWriteBoxes }
+                      : {}),
                     history: [
                       ...opts.history,
                       { role: 'user', content: opts.prompt },
@@ -1815,7 +1881,7 @@ export default function MathLayer({
         (hl) => highlightRecognizedLines(hl.lines)
       )
     },
-    [apiKey, ttsOK, gridCapture, problemImages, fitAllWork, recognizedLinesPayload, highlightRecognizedLines]
+    [apiKey, ttsOK, gridCapture, problemImages, fitAllWork, recognizedLinesPayload, highlightRecognizedLines, panToWriteBox]
   )
 
   const createHintFromRect = useCallback(
@@ -2430,8 +2496,18 @@ export default function MathLayer({
 
   const runClarifyHint = useCallback(
     (cardId: string, question: string) => {
+      // Guard against a second voice/clarify question landing while the
+      // first is still streaming: both would share the SAME hintSpeakerRef,
+      // and their pushSentence() calls read whatever it currently points to
+      // at call time — so two concurrent streams interleave into one audio
+      // queue, and the voice reads a scramble of both answers while each
+      // bubble's own text stays correct. One clarify/voice turn at a time.
+      if (voiceBusyRef.current) return
       const card = cardsRef.current.find((c) => c.id === cardId)
-      if (!card || !question.trim()) return
+      if (!card || !question.trim()) {
+        return
+      }
+      voiceBusyRef.current = true
       const clarifyId = uid()
       setCards((cs) =>
         cs.map((c) =>
@@ -2522,6 +2598,7 @@ export default function MathLayer({
             if (lines.length) highlightRecognizedLines(lines)
             speakUpTo(answer, true)
             hintSpeakerRef.current?.flush()
+            voiceBusyRef.current = false
             setCards((cs) =>
               cs.map((c) =>
                 c.id === cardId
@@ -2536,6 +2613,7 @@ export default function MathLayer({
             )
           },
           (err) => {
+            voiceBusyRef.current = false
             setCards((cs) =>
               cs.map((c) =>
                 c.id === cardId
@@ -2574,7 +2652,6 @@ export default function MathLayer({
   const [thinking, setThinking] = useState(false)
   const [interim, setInterim] = useState('')
   const [voiceUser, setVoiceUser] = useState('')
-  const [voiceReply, setVoiceReply] = useState('')
   const [voiceError, setVoiceError] = useState<string | null>(null)
 
   const recordingRef = useRef(false)
@@ -2815,14 +2892,6 @@ export default function MathLayer({
     cancelSpeech()
   }, [])
 
-  const dismissVoicePanel = useCallback(() => {
-    cleanupVoice()
-    setVoiceUser('')
-    setVoiceReply('')
-    setVoiceError(null)
-    setSpeaking(false)
-  }, [cleanupVoice])
-
   const startRecording = useCallback(() => {
     if (!sttOK) {
       setVoiceError('Voice input needs a Chromium browser (Chrome/Edge).')
@@ -2836,7 +2905,6 @@ export default function MathLayer({
     pendingTranscriptRef.current = ''
     interimRef.current = ''
     setVoiceUser('')
-    setVoiceReply('')
     const rec = createRecognizer({
       onStart: () => setListening(true),
       onEnd: () => {
@@ -3196,112 +3264,41 @@ export default function MathLayer({
     window.addEventListener('pointercancel', onUp)
   }
 
-  const voiceStatus = thinking
-    ? 'Thinking…'
-    : speaking
-    ? 'Speaking…'
-    : listening
-    ? 'Listening…'
-    : recording
-    ? 'Ready'
-    : ''
-  const voiceStatusColor = thinking ? '#2563eb' : speaking ? '#0d9488' : '#b45309'
-
   const clarifyLiveTranscript = clarifyRecordingId
     ? [clarifyPending, interim].filter(Boolean).join(' ')
     : ''
 
+  // Minimal floating live-transcript pill above the mic — just what the
+  // student is saying (or an error), liquid glass, nothing else. Thales's
+  // own reply already appears in the coach card that pops up separately.
+  const voiceTranscriptText = voiceError || interim || voiceUser || (thinking ? 'Thinking…' : recording ? 'Listening…' : '')
   const voicePanel =
     !clarifyRecordingId &&
-    (recording || thinking || speaking || voiceReply || voiceError || interim || voiceUser) && (
-    <div
-      data-html2canvas-ignore
-      className="card"
-      style={{
-        position: 'absolute',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        bottom: 76,
-        zIndex: 47,
-        width: 'min(100% - 32px, 520px)',
-        maxHeight: '40vh',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-      }}
-    >
+    (recording || thinking || voiceError) &&
+    voiceTranscriptText && (
       <div
+        data-html2canvas-ignore
         style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '9px 12px',
-          background: 'rgba(255,255,255,0.4)',
-          backdropFilter: 'blur(6px)',
-          WebkitBackdropFilter: 'blur(6px)',
-          borderBottom: '1px solid rgba(0,0,0,0.08)',
-          borderTopLeftRadius: '1.25em',
-          borderTopRightRadius: '1.25em',
+          position: 'absolute',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          bottom: 68,
+          zIndex: 47,
+          maxWidth: 'min(100% - 32px, 480px)',
         }}
       >
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5, fontWeight: 700, color: 'rgba(0,0,0,0.78)' }}>
-          Voice tutor
-          {voiceStatus && (
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 600, color: voiceStatusColor, background: 'rgba(255,255,255,0.55)', border: `1px solid ${voiceStatusColor}44`, borderRadius: 999, padding: '2px 8px' }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: voiceStatusColor }} />
-              {voiceStatus}
-            </span>
-          )}
-        </span>
-        <button
-          type="button"
-          onClick={dismissVoicePanel}
-          title="Close voice tutor"
-          aria-label="Close voice tutor"
-          className="btn-ghost"
-          style={{
-            width: 26,
-            height: 26,
-            padding: 0,
-            flexShrink: 0,
-            color: 'rgba(0,0,0,0.55)',
-          }}
-        >
-          <X size={13} />
-        </button>
+        <div className="math-voice-transcript">
+          {recording && !voiceError && <span className="math-voice-dot" />}
+          <span
+            className={`math-voice-transcript__text${
+              voiceError ? ' math-voice-transcript__text--error' : interim ? ' math-voice-transcript__text--interim' : ''
+            }`}
+          >
+            {voiceTranscriptText}
+          </span>
+        </div>
       </div>
-
-      <div style={{ padding: '10px 12px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {voiceError && (
-          <div style={{ fontSize: 12, color: '#b91c1c', lineHeight: 1.45 }}>{voiceError}</div>
-        )}
-        {(interim || voiceUser) && (
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase', color: 'rgba(0,0,0,0.4)', marginBottom: 2 }}>You</div>
-            <div style={{ fontSize: 13, color: interim ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.82)', lineHeight: 1.45 }}>
-              {interim || voiceUser}
-            </div>
-          </div>
-        )}
-        {voiceReply && (
-          <div>
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.3, textTransform: 'uppercase', color: 'rgba(0,0,0,0.4)', marginBottom: 2 }}>Thales</div>
-            <div style={{ fontSize: 13.5, color: 'rgba(0,0,0,0.85)', lineHeight: 1.5 }}>{voiceReply}</div>
-          </div>
-        )}
-        {thinking && !voiceReply && (
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'rgba(0,0,0,0.5)' }}>
-            <Loader2 size={13} className="animate-spin" /> Thinking…
-          </div>
-        )}
-        {recording && !voiceReply && !interim && !voiceUser && !voiceError && (
-          <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', lineHeight: 1.5 }}>
-            Recording — tap the mic again when you&apos;re done.
-          </div>
-        )}
-      </div>
-    </div>
-  )
+    )
 
   const iconBtnStyle = (active: boolean, activeColor = '#0d766e'): CSSProperties => ({
     display: 'grid',

@@ -175,8 +175,56 @@ export function boxOverlapsInk(box: BoardBounds, strokes: StrokeLike[], pad = 24
 }
 
 /**
- * Place a large write box in blank board space — below existing ink first,
- * then to the right, scanning until a clear region is found.
+ * Bounds of the main handwriting block — the largest vertically contiguous
+ * cluster of strokes. Ignores stray ink far below (e.g. leftovers from an
+ * earlier misplaced write box) so new boxes sit under the real work.
+ * On a size tie, the higher-on-page cluster wins.
+ */
+export function mainInkBounds(strokes: StrokeLike[]): BoardBounds | null {
+  const boxes: BoardBounds[] = []
+  for (const st of strokes) {
+    const b = boundsFromPoints(st.points)
+    if (!b) continue
+    if (b.maxX - b.minX < 2 && b.maxY - b.minY < 2) continue
+    boxes.push(b)
+  }
+  if (!boxes.length) return null
+  if (boxes.length === 1) return boxes[0]
+
+  const heights = boxes.map((b) => b.maxY - b.minY).sort((a, b) => a - b)
+  const medianH = heights[Math.floor(heights.length / 2)] || 40
+  const splitGap = Math.max(120, medianH * 4)
+
+  boxes.sort((a, b) => a.minY - b.minY || a.minX - b.minX)
+
+  const clusters: BoardBounds[][] = []
+  let current: BoardBounds[] = [boxes[0]]
+  let currentBottom = boxes[0].maxY
+  for (let i = 1; i < boxes.length; i++) {
+    const b = boxes[i]
+    if (b.minY - currentBottom <= splitGap) {
+      current.push(b)
+      currentBottom = Math.max(currentBottom, b.maxY)
+    } else {
+      clusters.push(current)
+      current = [b]
+      currentBottom = b.maxY
+    }
+  }
+  clusters.push(current)
+
+  clusters.sort((a, b) => {
+    if (b.length !== a.length) return b.length - a.length
+    return a[0].minY - b[0].minY
+  })
+
+  let union: BoardBounds | null = null
+  for (const b of clusters[0]) union = union ? unionBounds(union, b) : b
+  return union
+}
+
+/**
+ * Place a write box in blank board space — snug below the main ink cluster.
  */
 export function findBlankWriteBox(
   strokes: StrokeLike[],
@@ -186,48 +234,69 @@ export function findBlankWriteBox(
   minHeight: number,
   occupied: BoardBounds[] = []
 ): BoardBounds {
-  const margin = 28
-  const inkGap = 36
-  let inkBounds: BoardBounds | null = null
-  for (const region of occupied) {
-    inkBounds = inkBounds ? unionBounds(inkBounds, region) : region
-  }
-  for (const st of strokes) {
-    const b = boundsFromPoints(st.points)
-    if (b) inkBounds = inkBounds ? unionBounds(inkBounds, b) : b
-  }
+  const margin = 16
+  const inkGap = 14
+  const strokeBounds = mainInkBounds(strokes)
 
   const boardW = boardBounds.maxX - boardBounds.minX
-  const width = Math.min(boardW - margin * 2, Math.max(minWidth, boardW * 0.88))
-  const height = Math.max(minHeight, 260)
+  const width = Math.min(boardW - margin * 2, Math.max(minWidth, Math.min(boardW * 0.62, 520)))
+  const height = Math.max(minHeight, 88)
+
+  // Old write boxes parked far below the main work must not push the new box
+  // down into that same void — only avoid obstacles near the placement band.
+  const anchorBottom = strokeBounds ? strokeBounds.maxY : boardBounds.minY
+  const nearOccupied = occupied.filter((region) => region.minY <= anchorBottom + height * 3)
 
   const overlapsOccupied = (candidate: BoardBounds) =>
-    occupied.some((region) => boxesOverlap(candidate, region, inkGap))
+    nearOccupied.some((region) => boxesOverlap(candidate, region, inkGap))
 
   const fits = (candidate: BoardBounds) =>
     !boxOverlapsInk(candidate, strokes, inkGap) &&
     !overlapsOccupied(candidate) &&
-    !avoidBoxes.some((ab) => boxesOverlap(candidate, ab, 20))
+    !avoidBoxes.some((ab) => boxesOverlap(candidate, ab, 12))
 
-  const startY = inkBounds ? inkBounds.maxY + inkGap : boardBounds.minY + margin
-  const startX = boardBounds.minX + margin
+  const startY = strokeBounds ? strokeBounds.maxY + inkGap : boardBounds.minY + margin
+  const startX = strokeBounds
+    ? Math.max(
+        boardBounds.minX + margin,
+        Math.min(strokeBounds.minX, boardBounds.maxX - margin - width)
+      )
+    : boardBounds.minX + margin
 
-  for (let y = startY; y + height <= boardBounds.maxY - margin; y += 36) {
+  // Hard ceiling: never drift more than ~one box-height below the main work
+  // looking for a slot — if the band is clear, take it; else force it there.
+  const maxSearchY = startY + height + 40
+
+  for (let y = startY; y <= maxSearchY && y + height <= boardBounds.maxY - margin; y += 16) {
     const candidate = { minX: startX, minY: y, maxX: startX + width, maxY: y + height }
     if (fits(candidate)) return candidate
-  }
-
-  if (inkBounds) {
-    const rx = inkBounds.maxX + inkGap
-    for (let y = boardBounds.minY + margin; y + height <= boardBounds.maxY - margin; y += 36) {
-      if (rx + width > boardBounds.maxX - margin) break
-      const candidate = { minX: rx, minY: y, maxX: rx + width, maxY: y + height }
-      if (fits(candidate)) return candidate
+    if (startX !== boardBounds.minX + margin) {
+      const left = {
+        minX: boardBounds.minX + margin,
+        minY: y,
+        maxX: boardBounds.minX + margin + width,
+        maxY: y + height,
+      }
+      if (fits(left)) return left
     }
   }
 
-  const fallbackY = Math.max(startY, boardBounds.maxY - height - margin)
-  return { minX: startX, minY: fallbackY, maxX: startX + width, maxY: fallbackY + height }
+  if (strokeBounds) {
+    const rx = strokeBounds.maxX + inkGap
+    if (rx + width <= boardBounds.maxX - margin) {
+      const beside = {
+        minX: rx,
+        minY: Math.max(boardBounds.minY + margin, strokeBounds.minY),
+        maxX: rx + width,
+        maxY: Math.max(boardBounds.minY + margin, strokeBounds.minY) + height,
+      }
+      if (fits(beside)) return beside
+    }
+  }
+
+  // Force snug under the main work even if something weakly overlaps — better
+  // than stranding the box at the bottom of the board.
+  return { minX: startX, minY: startY, maxX: startX + width, maxY: startY + height }
 }
 
 /** Screen-space rect (pixels, relative to the board pane) used for hint-card placement. */

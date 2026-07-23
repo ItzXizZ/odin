@@ -1,12 +1,12 @@
 /**
  * ElevenLabs TTS proxy — keeps the API key server-side.
- * George: warm, articulate British male — ideal for patient math tutoring.
+ * Bill: deep, warm American baritone — trusted-teacher / documentary tone.
  */
 
 const ELEVENLABS_API = 'https://api.elevenlabs.io/v1'
 
-/** Premade voice — George (British, educational / explainer). */
-const DEFAULT_VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb'
+/** Premade voice — Bill (deep American baritone, history-teacher vibe). */
+const DEFAULT_VOICE_ID = 'pqHfZKP75CvOlQylNhV4'
 const DEFAULT_MODEL = 'eleven_turbo_v2_5'
 
 export function isElevenLabsConfigured() {
@@ -29,7 +29,7 @@ export function registerTtsRoutes(app) {
     res.json({
       available: true,
       provider: 'elevenlabs',
-      voice: process.env.ELEVENLABS_VOICE_NAME?.trim() || 'George',
+      voice: process.env.ELEVENLABS_VOICE_NAME?.trim() || 'Bill',
     })
   })
 
