@@ -8970,13 +8970,29 @@ kbd {
   border: 1px solid rgba(52, 0, 2, 0.25);
   background: #340002;
   color: #fff;
-  font-size: 14px;
-  font-weight: 700;
+  font-family: var(--font-claude);
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   overflow: hidden;
+  line-height: 1;
+}
+
+.amc-user-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  line-height: 1;
+  letter-spacing: 0;
+  user-select: none;
+  /* Capitals often sit high in the em-box; nudge for optical center. */
+  transform: translateY(0.5px);
 }
 
 .amc-user-btn img {

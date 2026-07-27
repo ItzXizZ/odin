@@ -514,7 +514,13 @@ function AmcStudio({ session, onSignOut }: { session: AmcSession; onSignOut: () 
               onClick={() => setUserOpen((v) => !v)}
               aria-label="Account menu"
             >
-              {isMathwiz ? <img src={ethanPortrait} alt="" /> : initial}
+              {isMathwiz ? (
+                <img src={ethanPortrait} alt="" />
+              ) : (
+                <span className="amc-user-initial" aria-hidden="true">
+                  {initial}
+                </span>
+              )}
             </button>
             {userOpen && (
               <div className="amc-user-pop">

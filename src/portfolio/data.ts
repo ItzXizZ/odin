@@ -14,8 +14,6 @@ import oscarSmus from './assets/press-oscar-smus.jpg'
 import pressBi from './assets/press-business-insider.jpg'
 import pressIngenious from './assets/press-ingenious.jpg'
 import cgShot from './assets/shot-commongap.png'
-import amcPressFull from './assets/press-amc-full.jpg'
-import amcPressChek from './assets/press-chek.jpg'
 import amcDlMain from './assets/amc-download-main.png'
 import amcDl1 from './assets/amc-download-1.png'
 import amcDl2 from './assets/amc-download-2.png'
@@ -116,22 +114,6 @@ export const PROJECTS: Project[] = [
       },
     ],
     gallery: [
-      {
-        src: amcPressFull,
-        alt: 'BCBusiness feature on AMC Academy',
-        kind: 'press',
-        outlet: 'BCBusiness',
-        headline: 'This teen-founded tutoring company is helping students reach international math competitions',
-        href: 'https://bcbusiness.ca/business/education/this-teen-founded-victoria-tutoring-company-is-helping-students-qualify-for-international-math-competitions/',
-      },
-      {
-        src: amcPressChek,
-        alt: 'CHEK News feature on AMC Academy',
-        kind: 'press',
-        outlet: 'CHEK News',
-        headline: 'SMUS students operate profitable online tutoring business',
-        href: 'https://cheknews.ca/entrepreneurial-equation-smus-students-operate-profitable-online-tutoring-business-1233661/',
-      },
       {
         src: amcDlMain,
         alt: 'AMC Academy website',
